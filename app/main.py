@@ -116,6 +116,26 @@ async def chat_interface():
     return FileResponse("static/chat.html")
 
 
+@app.get("/admin", include_in_schema=False)
+async def admin_interface():
+    """Serve the knowledge base admin page.
+
+    The HTML is public (browsers send no bearer token when navigating); the page
+    checks the admin token with /admin/verify before showing the editor.
+    """
+    return FileResponse("static/admin.html")
+
+
+@app.get("/admin/verify", include_in_schema=False, dependencies=[Depends(require_seed_token)])
+async def verify_admin_token():
+    """Check the admin token for the admin page, without side effects.
+
+    200 when the request carries SEED_TOKEN, or when no token is configured;
+    otherwise require_seed_token answers 401.
+    """
+    return {"ok": True}
+
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     """Handle favicon requests to prevent 404 errors."""
