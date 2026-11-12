@@ -37,12 +37,17 @@ class ModelClient(Protocol):
 class OpenAICompatibleClient:
     """Calls an OpenAI-compatible chat endpoint, such as Gemini's."""
 
-    def __init__(self, settings: OrchestratorSettings, http_client: httpx.Client | None = None):
+    def __init__(
+        self,
+        settings: OrchestratorSettings,
+        http_client: httpx.Client | None = None,
+        timeout: float = TIMEOUT_SECONDS,
+    ):
         self.model = settings.openai_chat_model
         self.sdk = openai.OpenAI(
             api_key=settings.openai_api_key,
             base_url=settings.base_url,
-            timeout=TIMEOUT_SECONDS,
+            timeout=timeout,
             max_retries=MAX_RETRIES,
             http_client=http_client,  # tests pass an in-memory transport
         )

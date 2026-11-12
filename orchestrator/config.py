@@ -12,6 +12,8 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 # A whole page is generated in one call, so allow longer than the app's 30 seconds.
 TIMEOUT_SECONDS = 120.0
+# In project mode one reply can hold several whole files (about 40 KB), so allow more.
+PROJECT_TIMEOUT_SECONDS = 300.0
 MAX_RETRIES = 1
 
 

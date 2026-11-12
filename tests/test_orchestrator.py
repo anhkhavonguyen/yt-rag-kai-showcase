@@ -120,6 +120,22 @@ def verdict(approved: bool, summary: str = "Summary.", issues=()) -> str:
     })
 
 
+class FakeTimer:
+    """Stands in for time.perf_counter: each reading is 1.5 s after the last, so every call takes 1.5 s."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        self.now += 1.5
+        return self.now
+
+
+def line(label: str, text: str = "") -> str:
+    """A log line as the orchestrator writes it, at the fixed test time NOW."""
+    return f"{NOW:%H:%M:%S} orchestrator  {label:<13}{text}".rstrip()
+
+
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -218,6 +234,10 @@ def test_client_uses_timeout_retries_and_default_endpoint():
     assert client.sdk.timeout == TIMEOUT_SECONDS
     assert client.sdk.max_retries == MAX_RETRIES
     assert str(client.sdk.base_url).rstrip("/") == DEFAULT_OPENAI_BASE_URL
+
+
+def test_client_timeout_can_be_raised():
+    assert OpenAICompatibleClient(make_settings(), timeout=300.0).sdk.timeout == 300.0
 
 
 def test_provider_error_keeps_only_type_and_status():
@@ -551,12 +571,14 @@ def test_transcript_says_who_ran_and_lists_verdicts_with_owners(tmp_path):
 
 
 def make_run(tmp_path, client, max_rounds=3):
-    """An orchestrator whose three agents share `client`, with events collected in a list."""
+    """An orchestrator whose three agents share `client`, wired as the command line wires them,
+    with a fixed clock and timer, and events collected in a list."""
     events: list[str] = []
     recorder = RunRecorder(tmp_path / "runs", now=NOW)
+    backend, frontend, reviewer = cli.build_agents(client, recorder)
     orchestrator = Orchestrator(
-        BackendAgent(client), FrontendAgent(client), ReviewerAgent(client), recorder,
-        max_rounds=max_rounds, on_event=events.append,
+        backend, frontend, reviewer, recorder,
+        max_rounds=max_rounds, on_event=events.append, clock=lambda: NOW, timer=FakeTimer(),
     )
     return orchestrator, recorder, events
 
@@ -575,8 +597,10 @@ def test_round_one_runs_backend_then_frontend_then_reviewer(tmp_path):
     assert (result.final_api, result.final_page) == (api_v(1), page_v(1))
     assert file_names(recorder.folder) == [
         "final/api.py", "final/index.html",
-        "round-1/api.py", "round-1/index.html", "round-1/review.json",
-        "transcript.md",
+        "round-1/api.py",
+        "round-1/calls/01-backend.md", "round-1/calls/02-frontend.md", "round-1/calls/03-reviewer.md",
+        "round-1/index.html", "round-1/review.json",
+        "run.log", "transcript.md",
     ]
 
 
@@ -593,7 +617,8 @@ def test_only_frontend_issues_skip_the_backend_and_keep_api(tmp_path):
     frontend_round_2 = client.prompts[3][1]
     for part in (TASK, api_v(1), page_v(1), "- The add button has no label"):
         assert part in frontend_round_2
-    assert "  backend   no backend issues, keeping api.py" in events
+    assert line("route", "backend: 0 issues | frontend: 1 issue") in events
+    assert line("skip", "backend: no issues, keeping api.py") in events
     assert read(recorder.folder / "round-2" / "api.py") == api_v(1)
     assert (result.final_api, result.final_page) == (api_v(1), page_v(2))
 
@@ -616,7 +641,7 @@ def test_backend_issue_rebuilds_api_then_the_page_for_the_new_api(tmp_path):
     assert api_v(2) in frontend_round_2 and page_v(1) in frontend_round_2
     assert "POST /api/todos accepts an empty title" not in frontend_round_2
     assert "api.py has changed" in frontend_round_2
-    assert "  frontend  updating index.html for the new api.py..." in events
+    assert line("-> frontend", "update index.html for the new api.py | sends: task, api.py (changed), index.html") in events
 
     # Approved in round 2: no round 3, and the final app is round 2's files.
     assert (result.outcome, result.rounds) == ("approved", 2)
@@ -662,7 +687,10 @@ def test_unreadable_verdict_warns_and_sends_the_reply_to_both_agents(tmp_path):
     result = orchestrator.run(TASK)
 
     assert (result.outcome, result.rounds) == ("approved", 2)
-    assert any(e.startswith("  warning ") and "not a valid verdict" in e for e in events)
+    warning = line("warning", "the reviewer's reply was not a valid verdict; counting it as changes requested")
+    assert events.index(warning) == events.index(
+        line("<- reviewer", "changes requested (1 issue: 1 for both): The reviewer's reply was not a valid verdict. | 1.5 s")
+    ) + 1
     assert "Looks mostly fine but the colors clash" in client.prompts[3][1]
     assert "Looks mostly fine but the colors clash" in client.prompts[4][1]
 
@@ -681,8 +709,13 @@ def test_never_approved_stops_at_the_round_limit_after_nine_calls(tmp_path):
     assert (result.outcome, result.rounds) == ("not approved", 3)
     assert (result.final_api, result.final_page) == (api_v(3), page_v(3))
     assert result.open_issues == [Issue(owner="backend", text="Issue from round 3")]
-    assert "  open issue [backend]: Issue from round 3" in events
-    assert f"Result: not approved after 3 rounds. Run folder: {recorder.folder}" in events
+    assert events[-5:] == [
+        line("decide", "changes requested after the last round (3) -> stop"),
+        line("open issue", "[backend] Issue from round 3"),
+        line("result", f"not approved after 3 rounds | folder: {recorder.folder}"),
+        line("next", f"cd {recorder.final_folder}"),
+        line("next", "python -m uvicorn api:app   (then open http://127.0.0.1:8000)"),
+    ]
     assert read(recorder.final_folder / "api.py") == api_v(3)
 
 
@@ -696,17 +729,21 @@ def test_events_for_a_one_round_approved_run(tmp_path):
     orchestrator.run(TASK)
 
     assert events == [
-        "== Round 1 of 3 ==",
-        "  backend   writing api.py...",
-        f"  backend   done: api.py, {file_size(api_v(1))}",
-        "  frontend  writing index.html...",
-        f"  frontend  done: index.html, {file_size(page_v(1))}",
-        "  reviewer  reviewing api.py and index.html...",
-        "  reviewer  approved: Meets the task.",
-        f"Result: approved after 1 round. Run folder: {recorder.folder}",
-        f"Run the app:  cd {recorder.final_folder}",
-        "              python -m uvicorn api:app   (then open http://127.0.0.1:8000)",
+        line("== round 1 of 3 =="),
+        line("-> backend", "write api.py | sends: task"),
+        line("<- backend", f"api.py, {file_size(api_v(1))} | 1.5 s"),
+        line("-> frontend", "write index.html | sends: task, api.py"),
+        line("<- frontend", f"index.html, {file_size(page_v(1))} | 1.5 s"),
+        line("-> reviewer", "review api.py and index.html | sends: task, api.py, index.html"),
+        line("<- reviewer", "approved: Meets the task. | 1.5 s"),
+        line("decide", "approved -> stop"),
+        line("result", f"approved after 1 round | folder: {recorder.folder}"),
+        line("next", f"cd {recorder.final_folder}"),
+        line("next", "python -m uvicorn api:app   (then open http://127.0.0.1:8000)"),
     ]
+    # Every line comes from the orchestrator, and run.log holds exactly what was printed.
+    assert all(e.startswith(f"{NOW:%H:%M:%S} orchestrator  ") for e in events)
+    assert read(recorder.folder / "run.log") == "".join(e + "\n" for e in events)
 
 
 def test_events_count_issues_per_owner_and_name_the_fixes(tmp_path):
@@ -719,9 +756,29 @@ def test_events_count_issues_per_owner_and_name_the_fixes(tmp_path):
 
     orchestrator.run(TASK)
 
-    assert "  reviewer  changes requested (3 issues: 1 backend, 1 frontend, 1 for both): Three fixes." in events
-    assert "  backend   fixing 2 issues in api.py..." in events  # its own plus the unowned one
-    assert "  frontend  fixing 2 issues in index.html..." in events
+    assert line("<- reviewer", "changes requested (3 issues: 1 backend, 1 frontend, 1 for both): Three fixes. | 1.5 s") in events
+    # Each builder gets its own issue plus the unowned one.
+    assert line("route", "backend: 2 issues | frontend: 2 issues") in events
+    assert line("-> backend", "fix 2 issues in api.py | sends: task, api.py, 2 issues") in events
+    assert line("-> frontend", "fix 2 issues in index.html | sends: task, api.py, index.html, 2 issues") in events
+
+
+def test_changes_requested_with_rounds_left_decides_to_continue(tmp_path):
+    client = FakeModelClient(
+        backend_reply(1), frontend_reply(1),
+        verdict(False, "Three fixes.", [("backend", "A"), ("frontend", "B"), ("frontend", "C")]),
+        backend_reply(2), frontend_reply(2), verdict(True, "Good."),
+    )
+    orchestrator, _, events = make_run(tmp_path, client)
+
+    orchestrator.run(TASK)
+
+    start = events.index(line("<- reviewer", "changes requested (3 issues: 1 backend, 2 frontend): Three fixes. | 1.5 s"))
+    assert events[start + 1:start + 4] == [
+        line("decide", "changes requested, round 1 of 3 -> round 2"),
+        line("== round 2 of 3 =="),
+        line("route", "backend: 1 issue | frontend: 2 issues"),
+    ]
 
 
 def test_reviewer_failure_stops_the_run_and_keeps_finished_files(tmp_path):
@@ -733,25 +790,67 @@ def test_reviewer_failure_stops_the_run_and_keeps_finished_files(tmp_path):
     assert client.calls == 3
     assert (result.outcome, result.rounds, result.final_api) == ("failed", 1, None)
     assert result.failure == "reviewer failed: RateLimitError (HTTP 429)"
-    assert "  error     reviewer failed: RateLimitError (HTTP 429)" in events
-    assert events[-1] == f"Result: failed in round 1. Run folder: {recorder.folder}"
-    assert file_names(recorder.folder) == ["round-1/api.py", "round-1/index.html", "transcript.md"]
+    assert events[-3:] == [
+        line("<- reviewer", "failed: RateLimitError (HTTP 429) | 1.5 s"),
+        line("decide", "reviewer failed -> stop"),
+        line("result", f"failed in round 1 | folder: {recorder.folder}"),
+    ]
+    assert file_names(recorder.folder) == [
+        "round-1/api.py",
+        "round-1/calls/01-backend.md", "round-1/calls/02-frontend.md", "round-1/calls/03-reviewer.md",
+        "round-1/index.html", "run.log", "transcript.md",
+    ]
+    assert read(recorder.folder / "round-1" / "calls" / "03-reviewer.md").endswith(
+        "## Reply\n\nfailed: RateLimitError (HTTP 429)\n"
+    )
     transcript = read(recorder.folder / "transcript.md")
     assert "- **Outcome:** failed in round 1" in transcript
     assert "- **Failure:** reviewer failed: RateLimitError (HTTP 429)" in transcript
 
 
 @pytest.mark.parametrize("replies, failure, files", [
-    ((ModelCallError("APITimeoutError"),), "backend failed: APITimeoutError", ["transcript.md"]),
-    ((backend_reply(1), "   "), "frontend failed: EmptyCode", ["round-1/api.py", "transcript.md"]),
+    ((ModelCallError("APITimeoutError"),), "backend failed: APITimeoutError",
+     ["round-1/calls/01-backend.md", "run.log", "transcript.md"]),
+    ((backend_reply(1), "   "), "frontend failed: EmptyCode",
+     ["round-1/api.py", "round-1/calls/01-backend.md", "round-1/calls/02-frontend.md", "run.log", "transcript.md"]),
 ])
 def test_builder_failures_name_the_agent(tmp_path, replies, failure, files):
-    orchestrator, recorder, _ = make_run(tmp_path, FakeModelClient(*replies))
+    orchestrator, recorder, events = make_run(tmp_path, FakeModelClient(*replies))
 
     result = orchestrator.run(TASK)
 
     assert (result.outcome, result.failure) == ("failed", failure)
+    agent, error_type = failure.split(" failed: ")
+    assert line(f"<- {agent}", f"failed: {error_type} | 1.5 s") in events
+    assert line("decide", f"{agent} failed -> stop") in events
     assert file_names(recorder.folder) == files
+
+
+def test_every_call_is_saved_with_what_was_sent_and_what_came_back(tmp_path):
+    client = FakeModelClient(
+        backend_reply(1), frontend_reply(1), verdict(False, "One fix.", [("frontend", "Label the add button")]),
+        frontend_reply(2), verdict(True, "Good."),
+    )
+    orchestrator, recorder, _ = make_run(tmp_path, client)
+
+    orchestrator.run(TASK)
+
+    # Round 2 skips the back end, so its calls are the front end, then the reviewer.
+    calls = recorder.folder / "round-2" / "calls"
+    assert sorted(p.name for p in calls.iterdir()) == ["01-frontend.md", "02-reviewer.md"]
+    (frontend_system, frontend_user), (reviewer_system, reviewer_user) = client.prompts[3:5]
+    assert read(calls / "01-frontend.md") == (
+        "# Call 01: frontend (round 2)\n\n"
+        f"## System prompt\n\n{frontend_system}\n\n"
+        f"## Message\n\n{frontend_user}\n\n"
+        f"## Reply\n\n{frontend_reply(2)}\n"
+    )
+    assert read(calls / "02-reviewer.md") == (
+        "# Call 02: reviewer (round 2)\n\n"
+        f"## System prompt\n\n{reviewer_system}\n\n"
+        f"## Message\n\n{reviewer_user}\n\n"
+        f"## Reply\n\n{verdict(True, 'Good.')}\n"
+    )
 
 
 def test_provider_message_with_the_key_reaches_no_output_or_file(tmp_path):
@@ -771,9 +870,11 @@ def test_provider_message_with_the_key_reaches_no_output_or_file(tmp_path):
 
     assert result.failure == "reviewer failed: ProviderError (HTTP 429)"
     assert not [e for e in events if SECRET in e]
-    for path in recorder.folder.rglob("*"):
-        if path.is_file():
-            assert SECRET not in read(path)
+    saved = [path for path in recorder.folder.rglob("*") if path.is_file()]
+    names = file_names(recorder.folder)
+    assert "run.log" in names and "round-1/calls/03-reviewer.md" in names  # the log and the failed call are checked too
+    for path in saved:
+        assert SECRET not in read(path)
 
 
 # --- Command line ----------------------------------------------------------------------
@@ -795,7 +896,7 @@ def scripted_client(monkeypatch):
 
     def install(*replies) -> FakeModelClient:
         client = FakeModelClient(*replies)
-        monkeypatch.setattr(cli, "build_client", lambda settings: client)
+        monkeypatch.setattr(cli, "build_client", lambda settings, **kwargs: client)
         return client
 
     return install
@@ -845,11 +946,11 @@ def test_max_rounds_that_is_not_a_number_exits_1(capsys):
 
 @pytest.mark.parametrize("replies, max_rounds, status, result_line", [
     ((backend_reply(1), frontend_reply(1), verdict(True, "Good.")), "3", 0,
-     "Result: approved after 1 round."),
+     "result       approved after 1 round |"),
     ((backend_reply(1), frontend_reply(1), verdict(False, "Fix it.", [("frontend", "No label")])), "1", 2,
-     "Result: not approved after 1 round."),
+     "result       not approved after 1 round |"),
     ((ModelCallError("RateLimitError (HTTP 429)"),), "3", 1,
-     "Result: failed in round 1."),
+     "result       failed in round 1 |"),
 ])
 def test_exit_status_matches_the_outcome(tmp_path, capsys, scripted_client, replies, max_rounds, status, result_line):
     client = scripted_client(*replies)
@@ -857,9 +958,46 @@ def test_exit_status_matches_the_outcome(tmp_path, capsys, scripted_client, repl
     assert cli.main([TASK, "--max-rounds", max_rounds, "--out-dir", str(tmp_path)], settings=make_settings()) == status
 
     out = capsys.readouterr().out
-    assert f"== Round 1 of {max_rounds} ==" in out
+    assert f"orchestrator  == round 1 of {max_rounds} ==" in out
     assert result_line in out
     assert client.roles[0] == "backend"
+
+
+def test_task_file_text_reaches_every_agent(tmp_path, scripted_client):
+    task_text = "Build a notes app.\n\nEach note has a title and a body.\nTitles are required."
+    task_file = tmp_path / "task.md"
+    task_file.write_text(f"\n{task_text}\n\n", encoding="utf-8")
+    client = scripted_client(backend_reply(1), frontend_reply(1), verdict(True, "Good."))
+
+    status = cli.main(["--task-file", str(task_file), "--out-dir", str(tmp_path / "runs")], settings=make_settings())
+
+    assert status == 0
+    assert client.roles == ["backend", "frontend", "reviewer"]
+    assert all(f"Task: {task_text}" in user for _, user in client.prompts)
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--task-file", "no-such-task.md"], "can't read the task file no-such-task.md"),
+    ([TASK, "--task-file", "task.md"], "not both"),
+])
+def test_task_file_problems_exit_1_before_any_model_call(tmp_path, monkeypatch, capsys, scripted_client, argv, message):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "task.md").write_text("A counter app.", encoding="utf-8")
+    client = scripted_client()
+
+    status = cli.main(argv + ["--out-dir", str(tmp_path / "runs")], settings=make_settings())
+
+    assert status == 1
+    assert message in capsys.readouterr().err
+    assert client.calls == 0
+    assert not (tmp_path / "runs").exists()
+
+
+def test_help_lists_the_task_file_option(capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--help"])
+
+    assert "--task-file" in capsys.readouterr().out
 
 
 def test_progress_lines_survive_a_console_that_cannot_show_them(monkeypatch):
