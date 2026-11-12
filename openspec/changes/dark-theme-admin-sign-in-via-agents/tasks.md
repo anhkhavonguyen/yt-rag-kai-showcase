@@ -108,9 +108,11 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
 
   Verify: `pytest` and `ruff check .` pass, and every option in the README appears in `python -m orchestrator --help`. Commit groups 2 and 3 together, then push. Verify: CI `lint` and `test` pass on the branch.
 
+  Status (2026-11-12): the README section is written. Locally, `pytest` gives 223 passed and 1 skipped (the symbolic-link test, since this Windows machine can't create links), `ruff check .` passes with the pinned 0.17.4, and the README options all appear in `--help`. The work is committed as `c96f2d0` and the branch is pushed. **Still open:** CI on the branch. CI runs on pull requests and on manual dispatch, and the GitHub CLI isn't installed here, so neither can be started from this machine. The CI check is moved to the pull request in 6.1.
+
 ## 4. Acceptance tests and the agents' task (hand-written, before the run)
 
-- [ ] 4.1 Write `tests/test_admin_sign_in.py`, covering every scenario in `specs/admin-sign-in`, `specs/admin-page` and `specs/knowledge-base-seeding`:
+- [x] 4.1 Write `tests/test_admin_sign_in.py`, covering every scenario in `specs/admin-sign-in`, `specs/admin-page` and `specs/knowledge-base-seeding`:
   - use `follow_redirects=False` for every 303 check;
   - import `app.core.admin_session` directly, not with `importorskip`, so a missing module fails the run;
   - build expired and rotated-token cookies with `issue(token, now)`;
@@ -119,7 +121,9 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - check `Origin`/`Host` matching on `/seed`, using `mock_seed` to prove nothing was seeded.
 
   Don't commit yet. Verify: `pytest tests/test_admin_sign_in.py` fails only because the feature is missing (an import error for `app.core.admin_session`, 404s or wrong status codes), not because of mistakes in the test code.
-- [ ] 4.2 Write `tests/test_theme.py`, covering every scenario in `specs/ui-theme` that can be checked over HTTP (design decision 11):
+
+  Result: 3 passed (the bearer-token cases of `/seed`, which don't change), 26 failed, 21 errors. Every error is `ModuleNotFoundError: app.core.admin_session`, and every failure is a 404, a missing `Cache-Control`, a missing Sign out, or `sessionStorage` still in use. The module is imported in a fixture, not at the top, so a missing module errors the tests that need it, never skips them, and the rest of the suite still runs. Two tests passed for the wrong reason at first (one against a 404, one because `/admin` is open today), and they were tightened.
+- [x] 4.2 Write `tests/test_theme.py`, covering every scenario in `specs/ui-theme` that can be checked over HTTP (design decision 11):
   - `/static/theme.css` is served as CSS;
   - the tokens are present;
   - the contrast pairs pass, computed with the WCAG formula;
@@ -130,13 +134,17 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - `/chat` keeps its title, heading, subtitle, welcome text, input and Send button, and has no `/admin` link.
 
   Don't commit yet. Verify: the file fails only because the feature is missing.
-- [ ] 4.3 Update `tests/test_api.py`:
+
+  Result: 1 failed and 28 errors, all `404 == 200` for `/static/theme.css` or `/admin/login`. The helpers were checked separately: the content checks pass on today's `chat.html`, the hex check finds its 23 hard-coded colors, and token parsing and contrast give the planned values (15.53:1 for `--text` on `--bg`).
+- [x] 4.3 Update `tests/test_api.py`:
   - replace the three `/admin/verify` tests with one that expects 404;
   - move the `/admin` page test to `test_admin_sign_in.py`, as 303 without a session;
   - in `test_other_endpoints_do_not_need_the_token`, replace the `/admin` line with `/admin/login` answering 200.
 
   Don't commit yet. Verify: the tests unrelated to `/admin` still pass on the current code.
-- [ ] 4.4 Write `orchestrator/tasks/dark-theme-admin-sign-in.md`, the agents' task. It restates the five spec files as concrete instructions:
+
+  Result: 23 passed. The 2 that fail are the changed ones (`/admin/verify` still answers, and `/admin/login` doesn't exist yet).
+- [x] 4.4 Write `orchestrator/tasks/dark-theme-admin-sign-in.md`, the agents' task. It restates the five spec files as concrete instructions:
   - routes and status codes;
   - cookie attributes;
   - the `admin_session` interface from design decision 9;
@@ -146,6 +154,33 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - "change nothing else; keep every existing route and test passing; add no dependencies".
 
   Verify: a checklist that maps each spec requirement to a line in the task file, with none missing. Commit the task file only.
+
+  Checklist (each spec requirement, then the task-file section that states it):
+  - **admin-sign-in**:
+    - sign-in page served → §2 `GET /admin/login`, §5;
+    - signed-in owners sent to `/admin` → §2;
+    - correct token starts a session → §2 cookie attributes, §5 on 204;
+    - wrong token starts no session → §2 401, no log of the token, §5 message;
+    - no token configured starts no session → §2;
+    - 8 hours, and ends when the token changes → §1;
+    - sign out → §2 logout, §6 button.
+  - **admin-page**:
+    - `/admin` gated, 303, `no-store` → §2;
+    - editor with Sign out and no browser storage → §6 and the rules for all three pages;
+    - refused save asks to sign in again → §6;
+    - REMOVED token form on load → §6 "Remove the old token gate";
+    - REMOVED `/admin/verify` → §2.
+  - **knowledge-base-seeding**: bearer, or cookie with matching `Origin` → §2 `/seed`.
+  - **ui-theme**:
+    - always dark, no toggle → §3, rules;
+    - one stylesheet, no hex colors → §3, rules;
+    - contrast → §3 palette and thresholds;
+    - focus → §3;
+    - phone width → rules;
+    - nothing external → intro, §3;
+    - `/chat` keeps its content → §4.
+
+  None is missing. The `agent-orchestrator` spec is not part of the agents' task, because it was written by hand in groups 2 and 3.
 
 ## 5. Build the feature with the agents (specs: admin-sign-in, admin-page, knowledge-base-seeding, ui-theme)
 
