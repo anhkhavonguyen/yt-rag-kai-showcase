@@ -18,7 +18,8 @@ The app has two features ready for the agents to build:
   - `<- agent`: what came back and how long it took;
   - `route` and `decide`: which issues go to which agent, and why the run continues or stops.
 
-  The same lines go to `run.log` in the run folder. Every model request and reply is saved under `round-N/calls/`. **BREAKING (output format)**: the progress lines change for app mode too. Exit statuses and the run folder layout are unchanged; the new files are added.
+  The same lines go to `run.log` in the run folder. Every model request and reply is saved under `round-N/calls/`.
+- **Hand-off mode (added during implementation).** With `--handoff`, the orchestrator calls no model API. It writes each agent's request to a file and waits for the reply file, so another agent, such as a Claude Code sub-agent, can answer while the Gemini free tier is unavailable. Routing, the log and `--apply` are unchanged. **BREAKING (output format)**: the progress lines change for app mode too. Exit statuses and the run folder layout are unchanged; the new files are added.
 
 **The app, built by the agents in project mode**
 - **Dark theme on every page.** `/chat`, the new sign-in page and `/admin` share one dark stylesheet, `static/theme.css`. Its text colors meet WCAG AA contrast. The pages are always dark, with no light mode and no toggle.

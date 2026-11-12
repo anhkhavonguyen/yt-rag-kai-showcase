@@ -109,6 +109,14 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   Verify: `pytest` and `ruff check .` pass, and every option in the README appears in `python -m orchestrator --help`. Commit groups 2 and 3 together, then push. Verify: CI `lint` and `test` pass on the branch.
 
   Status (2026-11-12): the README section is written. Locally, `pytest` gives 223 passed and 1 skipped (the symbolic-link test, since this Windows machine can't create links), `ruff check .` passes with the pinned 0.17.4, and the README options all appear in `--help`. The work is committed as `c96f2d0` and the branch is pushed. **Still open:** CI on the branch. CI runs on pull requests and on manual dispatch, and the GitHub CLI isn't installed here, so neither can be started from this machine. The CI check is moved to the pull request in 6.1.
+- [x] 3.7 (Added during implementation, design decision 14.) Add `--handoff`: a `HandoffChannel` in `orchestrator/handoff.py` that writes `handoff/NN-<agent>.request.md` and waits for the matching `.reply.md` (stable size, 1-hour limit, `HandoffTimeout`). With it, no `OPENAI_API_KEY` is needed. The first log line names the model and endpoint, or the hand-off folder. Tests:
+  - the request holds the system prompt and message, and the reply is returned once its size is stable;
+  - a reply still being written is waited for;
+  - a timeout gives `HandoffTimeout`, and an empty reply gives `EmptyReply`;
+  - the agents get their own named files;
+  - the command line with `--handoff` needs no API key and logs the hand-off folder.
+
+  Document it in `orchestrator/README.md`. Verify: `pytest` and `ruff check .` pass.
 
 ## 4. Acceptance tests and the agents' task (hand-written, before the run)
 
@@ -189,6 +197,19 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - `run.log` shows, in every round, the orchestrator dispatching to and receiving from the back-end, front-end and reviewer agents, with `route` and `decide` lines.
 
   If a run fails or isn't approved, run again, with a wait, `--max-rounds 5` or another model for that run. Allow at most 3 runs in total. Record each run's folder, outcome and call count under this task.
+
+  Runs so far (2026-11-12), all on `gemini-3.5-flash-lite`, because `gemini-3.5-flash` had used up its daily free quota (HTTP 429):
+  1. `20261112-205833`: failed in round 1. The back-end call got `InternalServerError (HTTP 503)` after 46.7 s. 1 call (2 requests with the client's retry). The request was about 59 KB.
+  2. `20261112-205932`: failed in round 1, the same way, after 51.8 s.
+
+  A one-word probe at about 21:05 showed the following:
+  - `gemini-3.8-flash` and `gemini-3.7-flash` time out (`APITimeoutError`);
+  - `gemini-3.5-flash` still answers 429;
+  - small requests on `gemini-3.5-flash-lite` worked earlier, at 20:42.
+
+  **Paused**: the free tier can't serve this request right now. Run 3, the last one allowed, is held until the provider is available. The user decides when to retry and with which model.
+
+  **Decision (owner, 2026-11-12):** don't wait for the quota and don't use the Gemini API. Run 3 uses `--handoff` (task 3.7, design decision 14), with each request answered by a Claude Code sub-agent: a back-end, a front-end or a reviewer sub-agent, each seeing only its own request file. The verification above still applies: an approved run, and a `run.log` showing the orchestrator dispatching to and receiving from every agent in every round.
 - [ ] 5.2 Read the approved run's `changes.diff` completely, and check:
   - the cookie attributes;
   - `compare_digest` for the token and the signature;

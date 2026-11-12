@@ -30,6 +30,7 @@ from .agents import (
     ReviewerAgent,
 )
 from .config import PROJECT_TIMEOUT_SECONDS, TIMEOUT_SECONDS, OrchestratorSettings
+from .handoff import HandoffChannel
 from .llm import ModelClient, OpenAICompatibleClient
 from .orchestrator import EXIT_CODES, DispatchLog, Orchestrator, ProjectOrchestrator
 from .project import Project, ProjectError, apply_run, load_project
@@ -81,6 +82,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="project mode: a read-only file every agent receives, such as a test file; repeatable",
     )
     parser.add_argument(
+        "--handoff", action="store_true",
+        help="call no model API: write each agent call to <run folder>/handoff/NN-<agent>.request.md "
+             "and wait for NN-<agent>.reply.md, written by another agent or a person "
+             "(no OPENAI_API_KEY needed)",
+    )
+    parser.add_argument(
         "--apply", default=None, metavar="RUN_FOLDER",
         help="copy an approved project-mode run's files into the project, then run the tests; "
              "the files are restored if the tests fail",
@@ -106,7 +113,7 @@ def input_problem(task: str, args: argparse.Namespace, settings: OrchestratorSet
         return 'a task is required, for example: python -m orchestrator "a counter app"'
     if not MIN_ROUNDS <= args.max_rounds <= MAX_ROUNDS:
         return f"--max-rounds must be between {MIN_ROUNDS} and {MAX_ROUNDS} (got {args.max_rounds})"
-    if not settings.openai_api_key:
+    if not settings.openai_api_key and not args.handoff:
         return "OPENAI_API_KEY is required. Set it in .env; a free Gemini key works (see orchestrator/README.md)."
     return None
 
@@ -128,23 +135,30 @@ def build_client(settings: OrchestratorSettings, timeout: float = TIMEOUT_SECOND
     return OpenAICompatibleClient(settings, timeout=timeout)
 
 
-def build_agents(client: ModelClient, recorder: RunRecorder) -> tuple[BackendAgent, FrontendAgent, ReviewerAgent]:
+def _recorded(client: ModelClient | HandoffChannel, recorder: RunRecorder, agent: str) -> RecordingClient:
+    """The client one agent uses, saving every call. A hand-off channel gives each agent its own named files."""
+    if isinstance(client, HandoffChannel):
+        client = client.for_agent(agent)
+    return RecordingClient(client, recorder, agent)
+
+
+def build_agents(client: ModelClient | HandoffChannel, recorder: RunRecorder) -> tuple[BackendAgent, FrontendAgent, ReviewerAgent]:
     """The three agents, sharing one client. Each call is saved to the run folder under the agent's name."""
     return (
-        BackendAgent(RecordingClient(client, recorder, BACKEND)),
-        FrontendAgent(RecordingClient(client, recorder, FRONTEND)),
-        ReviewerAgent(RecordingClient(client, recorder, REVIEWER)),
+        BackendAgent(_recorded(client, recorder, BACKEND)),
+        FrontendAgent(_recorded(client, recorder, FRONTEND)),
+        ReviewerAgent(_recorded(client, recorder, REVIEWER)),
     )
 
 
 def build_project_agents(
-    client: ModelClient, recorder: RunRecorder
+    client: ModelClient | HandoffChannel, recorder: RunRecorder
 ) -> tuple[ProjectBuilderAgent, ProjectBuilderAgent, ProjectReviewerAgent]:
     """The project-mode agents, sharing one client, with every call saved like build_agents."""
     return (
-        ProjectBuilderAgent(BACKEND, RecordingClient(client, recorder, BACKEND)),
-        ProjectBuilderAgent(FRONTEND, RecordingClient(client, recorder, FRONTEND)),
-        ProjectReviewerAgent(RecordingClient(client, recorder, REVIEWER)),
+        ProjectBuilderAgent(BACKEND, _recorded(client, recorder, BACKEND)),
+        ProjectBuilderAgent(FRONTEND, _recorded(client, recorder, FRONTEND)),
+        ProjectReviewerAgent(_recorded(client, recorder, REVIEWER)),
     )
 
 
@@ -189,9 +203,15 @@ def main(argv: list[str] | None = None, settings: OrchestratorSettings | None = 
         print(f"error: {problem}", file=sys.stderr)
         return 1
 
-    # One client, shared by all three agents. Project-mode replies are longer, so they get more time.
-    client = build_client(settings, timeout=PROJECT_TIMEOUT_SECONDS if project else TIMEOUT_SECONDS)
     recorder = RunRecorder(args.out_dir)
+    if args.handoff:
+        # No model API: every agent call becomes a request file, answered by a reply file.
+        client = HandoffChannel(recorder.folder / "handoff")
+        source = f"hand-off: requests and replies in {client.folder}"
+    else:
+        # One client, shared by all three agents. Project-mode replies are longer, so they get more time.
+        client = build_client(settings, timeout=PROJECT_TIMEOUT_SECONDS if project else TIMEOUT_SECONDS)
+        source = f"{settings.openai_chat_model} at {settings.base_url}"
     if project is None:
         backend, frontend, reviewer = build_agents(client, recorder)
         orchestrator = Orchestrator(
@@ -213,6 +233,7 @@ def main(argv: list[str] | None = None, settings: OrchestratorSettings | None = 
             max_rounds=args.max_rounds,
             on_event=print_line,
         )
+    orchestrator.log.line("model", source)  # where the agents' answers come from
     result = orchestrator.run(task)
     return EXIT_CODES[result.outcome]
 

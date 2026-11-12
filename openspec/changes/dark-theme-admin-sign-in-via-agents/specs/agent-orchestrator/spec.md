@@ -78,6 +78,24 @@ Each run SHALL write to a new folder `<out-dir>/<YYYYMMDD-HHMMSS>/`, where `--ou
 - **WHEN** two runs start within the same second
 - **THEN** each run gets its own folder and neither overwrites the other's files
 
+### Requirement: Agents use the configured OpenAI-compatible model
+Unless `--handoff` is given, all three agents SHALL send requests to the endpoint in `OPENAI_BASE_URL` (default OpenAI endpoint when unset or empty), authenticated with `OPENAI_API_KEY`, naming the model in `OPENAI_CHAT_MODEL`. The tool SHALL NOT require any database setting. Without `--handoff`, a missing `OPENAI_API_KEY` SHALL be reported before any model call, with exit status 1.
+
+#### Scenario: Gemini configured
+- **GIVEN** `OPENAI_BASE_URL` is the Gemini OpenAI-compatible URL and `OPENAI_CHAT_MODEL=gemini-3.5-flash`
+- **WHEN** a run makes model calls
+- **THEN** every call goes to the Gemini URL and names `gemini-3.5-flash`
+
+#### Scenario: No database settings
+- **GIVEN** `OPENAI_API_KEY` is set and no `SUPABASE_*` variables are set
+- **WHEN** the user starts a run
+- **THEN** the run starts normally
+
+#### Scenario: Missing API key
+- **GIVEN** `OPENAI_API_KEY` is not set
+- **WHEN** the user starts a run without `--handoff`
+- **THEN** the tool prints that `OPENAI_API_KEY` is required, exits with status 1, and makes no model call
+
 ### Requirement: Generated code is saved, never run
 A build run SHALL only write generated code to files in its run folder. It SHALL NOT execute or import the code, start a server, open it in a browser, or write outside the run folder. In project mode, generated code reaches the project only through the separate apply command.
 
@@ -91,6 +109,32 @@ A build run SHALL only write generated code to files in its run folder. It SHALL
 - **THEN** `app/main.py` and `static/chat.html` in the project are byte-for-byte unchanged
 
 ## ADDED Requirements
+
+### Requirement: Agent calls can be answered through hand-off files
+With `--handoff`, the tool SHALL call no model API. For each agent call it SHALL:
+- write the agent's system prompt and message to `<run folder>/handoff/NN-<agent>.request.md`;
+- wait for `NN-<agent>.reply.md`, and use that file's text as the reply.
+
+`OPENAI_API_KEY` SHALL NOT be required. A reply that does not arrive within the wait limit SHALL stop the run as a failure of that agent. Routing, logging, the run folder and `--apply` SHALL work exactly as with a model API.
+
+#### Scenario: A call answered through files
+- **GIVEN** a run with `--handoff`
+- **WHEN** the orchestrator sends the back-end agent its job
+- **THEN** `handoff/01-backend.request.md` holds the back-end agent's system prompt and the message
+- **AND** once `handoff/01-backend.reply.md` is written, its text is read as the back-end agent's reply, and the run goes on to the front-end agent
+
+#### Scenario: No API key needed
+- **GIVEN** `OPENAI_API_KEY` is not set
+- **WHEN** the user starts a run with `--handoff`
+- **THEN** the run starts, and no model API is called
+
+#### Scenario: Reply never written
+- **WHEN** no reply file appears within the wait limit
+- **THEN** the run stops as a failure of that agent with the error type `HandoffTimeout`
+
+#### Scenario: The log names where the answers come from
+- **WHEN** a run starts
+- **THEN** its first log line names the model and endpoint, or with `--handoff`, the hand-off folder
 
 ### Requirement: Project mode lists the files the agents may change
 Each `--edit PATH` SHALL name a project file the agents may change or create, relative to the current folder. A `.py` file SHALL belong to the back-end agent, and `.html`, `.css` and `.js` files to the front-end agent. Any invalid `--edit` SHALL stop the tool with an error naming the path and the problem, and exit status 1, before any model call.

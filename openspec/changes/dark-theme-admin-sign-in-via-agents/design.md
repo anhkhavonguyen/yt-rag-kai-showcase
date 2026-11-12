@@ -198,6 +198,27 @@ python -m orchestrator --task-file orchestrator/tasks/dark-theme-admin-sign-in.m
 ### 13. Evidence kept with the change
 The orchestrator writes to `orchestrator_runs/`, which is git-ignored. To keep a record of how the feature was built, the applied run's `run.log`, `transcript.md` and `changes.diff` are copied to `openspec/changes/dark-theme-admin-sign-in-via-agents/agent-run/`. That folder holds the record of the orchestrator directing its sub-agents.
 
+### 14. Hand-off files when the model API can't serve (added during implementation)
+Runs 1 and 2 of task 5.1 failed on the first call. The Gemini free tier was out of quota on `gemini-3.5-flash`, returned HTTP 503 on `flash-lite` for the 59 KB request, and timed out on the other flash models. The owner asked to go on without waiting and without the Gemini API, and still to see a log of the agents running.
+
+`--handoff` makes `HandoffChannel` (in `orchestrator/handoff.py`) the model client:
+- **Request.** For each call it writes `handoff/NN-<agent>.request.md`, holding the agent's system prompt and message, as in `calls/`.
+- **Reply.** It waits for `NN-<agent>.reply.md`. The file counts as complete when it exists and its size is unchanged between two checks one second apart. The wait limit is 1 hour, so a slow writer doesn't fail the call. Past the limit, the call fails with `HandoffTimeout`.
+- **Wiring.** Each agent gets its own client from the shared channel (`for_agent`), so the file name says which agent is asked.
+- **Unchanged.** Everything else stays as it is: routing, the dispatch log, recording, the project files and apply.
+
+For this change, Claude Code sub-agents answer the requests:
+- one general-purpose sub-agent per request;
+- each one is told to read only its request file, act as the role in its system prompt, write only the reply file, and touch no project file.
+
+So the sub-agents see exactly what a Gemini agent would see. The reviewer sub-agent sees only the reviewer request, with the diffs and the tests, never the builders' reasoning. The orchestrator's `run.log` remains the record of who was asked what, and when.
+
+We considered two alternatives:
+- **Waiting for the quota.** This would block the owner for about 18 hours.
+- **Running the sub-agents outside the orchestrator and writing a log by hand.** The log would be a story, not output of the orchestrator, and the review loop and `--apply` gate would be bypassed.
+
+The first log line now names where the answers come from: the model and endpoint, or the hand-off folder.
+
 ## Risks / Trade-offs
 
 - **[Free-tier 429 or 503 errors, or about 20 calls a day on some models]** → One run makes at most 9 calls. A failed run is run again, after a wait or with `OPENAI_CHAT_MODEL` overridden for that one run (README).

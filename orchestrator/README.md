@@ -98,6 +98,7 @@ python -m orchestrator --help
 | `--task-file PATH` | | Read the task from this UTF-8 file instead of the command line. Use it for long tasks. Don't pass both. |
 | `--max-rounds N` | `3` | Most rounds, from 1 to 10. Each round makes 2 or 3 model calls. |
 | `--out-dir PATH` | `orchestrator_runs` | Folder that holds the run folders. |
+| `--handoff` | | Call no model API. Each agent call is answered through files instead (see [Hand-off](#hand-off-answer-the-agents-without-a-model-api)). No `OPENAI_API_KEY` needed. |
 
 ### The log: the orchestrator in control
 
@@ -239,6 +240,21 @@ Apply works from the project folder the run was made in.
 3. If the tests pass, it lists what it changed and created, and exits 0. Review with `git diff`, then commit.
 4. If the tests fail, or you press Ctrl+C, it restores every file and deletes the files it created. The run's files stay in `final/files/`.
 
+## Hand-off: answer the agents without a model API
+
+When the model API can't serve, for example when the free tier is out of quota or keeps answering 503, add `--handoff`. The orchestrator then calls no model at all. For every agent call:
+
+1. It writes `<run folder>/handoff/NN-<agent>.request.md`, holding the agent's system prompt and the message, which is exactly what the model would have received.
+2. It waits for `NN-<agent>.reply.md` next to it. A reply counts as complete when its size stays the same for a second.
+
+Anyone who reads the request and writes the reply acts as that agent: a person, or another agent such as a Claude Code sub-agent. The rest is unchanged: the orchestrator routes, logs, records and decides exactly as with a model, and `--apply` works on the run. The first log line says where the answers come from:
+
+```
+21:12:40 orchestrator  model        hand-off: requests and replies in orchestrator_runs/20261112-211240/handoff
+```
+
+A reply that doesn't arrive within an hour fails the call with `HandoffTimeout`. The dark theme and admin sign-in page of this repository were built this way, with one Claude Code sub-agent per request, because the Gemini free tier was unavailable.
+
 ## Exit status
 
 | Status | Meaning |
@@ -259,12 +275,13 @@ Read the files in this order:
 | [`llm.py`](llm.py) | The model client, the only code that talks to the model. Error messages keep the error type only, never the provider's text. |
 | [`recorder.py`](recorder.py) | Writes the run folder, including `run.log`, and `RecordingClient`, which saves each agent's calls |
 | [`project.py`](project.py) | Project mode: checks `--edit` and `--context` paths, reads the starting files, makes diffs, and applies a run |
+| [`handoff.py`](handoff.py) | Hand-off mode: writes each agent call as a request file and waits for the reply file |
 | [`config.py`](config.py) | The three `OPENAI_*` settings |
 
 The tests in [`tests/test_orchestrator.py`](../tests/test_orchestrator.py) and, for project mode and `--apply`, [`tests/test_orchestrator_project.py`](../tests/test_orchestrator_project.py) run offline with a scripted fake model, so they cost nothing:
 
 ```bash
-pytest tests/test_orchestrator.py tests/test_orchestrator_project.py
+pytest tests/test_orchestrator.py tests/test_orchestrator_project.py tests/test_orchestrator_handoff.py
 ```
 
 ## Walkthrough screenshots
