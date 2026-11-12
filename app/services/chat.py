@@ -10,10 +10,18 @@ import logging
 from typing import List, Dict, Any
 import openai
 import anthropic
-from ..core.config import get_settings
+from ..core.config import DEFAULT_OPENAI_BASE_URL, get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class ChatUnavailableError(RuntimeError):
+    """The chat model couldn't produce an answer.
+
+    Deliberately carries no provider error text, so it can't leak request or
+    account details into API responses.
+    """
 
 
 class ChatService:
@@ -24,7 +32,12 @@ class ChatService:
         self.provider = settings.ai_provider
         
         if self.provider == "openai":
-            self.client = openai.OpenAI(api_key=settings.openai_api_key)
+            self.client = openai.OpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url or DEFAULT_OPENAI_BASE_URL,
+                timeout=settings.openai_timeout_seconds,
+                max_retries=settings.openai_max_retries,
+            )
             self.model = settings.openai_chat_model
         elif self.provider == "anthropic":
             self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -44,6 +57,9 @@ class ChatService:
             
         Returns:
             Generated answer with citations
+
+        Raises:
+            ChatUnavailableError: the provider call failed or returned no text
         """
         # Build context string with citations
         context_parts = []
@@ -93,13 +109,24 @@ class ChatService:
                     messages=[{"role": "user", "content": user_prompt}]
                 )
                 answer = response.content[0].text
-            
-            logger.info(f"Generated answer using {self.provider}")
-            return answer or "I couldn't generate an answer."
-            
+
         except Exception as e:
-            logger.error(f"Failed to generate answer: {e}")
-            return f"I encountered an error while processing your question: {str(e)}"
+            # Log the error type and HTTP status only: provider messages can echo
+            # request or account details, and none of it may reach API responses.
+            status = getattr(e, "status_code", None)
+            logger.error(
+                "Chat model request failed: %s%s",
+                type(e).__name__,
+                f" (HTTP {status})" if status else "",
+            )
+            raise ChatUnavailableError(f"Chat model request failed ({type(e).__name__})") from None
+
+        if not answer or not answer.strip():
+            logger.error("Chat model returned an empty answer")
+            raise ChatUnavailableError("Chat model returned an empty answer")
+
+        logger.info(f"Generated answer using {self.provider}")
+        return answer
 
 
 # Global service instance

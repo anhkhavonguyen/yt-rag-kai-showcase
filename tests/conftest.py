@@ -14,8 +14,16 @@ PLACEHOLDER_SETTINGS = {
     "SUPABASE_ANON_KEY": "placeholder-anon-key",
     "SUPABASE_SERVICE_ROLE_KEY": "placeholder-service-role-key",
     "OPENAI_API_KEY": "placeholder-openai-key",
+    "OPENAI_BASE_URL": "",  # empty = default OpenAI endpoint
+    "OPENAI_CHAT_MODEL": "test-chat-model",
+    "OPENAI_EMBED_MODEL": "test-embed-model",
+    "EMBEDDING_DIMENSIONS": "1536",
+    "EMBEDDING_BATCH_SIZE": "100",
+    "EMBEDDING_SEND_DIMENSIONS": "true",
     "ANTHROPIC_API_KEY": "placeholder-anthropic-key",
     "AI_PROVIDER": "openai",
+    "SEED_TOKEN": "",  # empty = /seed open; tests that need a token set it explicitly
+    "ENVIRONMENT": "test",
 }
 
 # Direct assignment (not setdefault): overwrite anything already in the shell.
@@ -26,7 +34,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.core.database  # noqa: E402
 import app.main  # noqa: E402
-from app.services.chat import chat_service  # noqa: E402
+from app.services.chat import ChatUnavailableError, chat_service  # noqa: E402
 from app.services.embedding import embedding_service  # noqa: E402
 from app.services.rag import rag_service  # noqa: E402
 
@@ -59,8 +67,11 @@ class FakeEmbeddingService:
     def __init__(self, dimensions: int = 3):
         self.dimensions = dimensions
         self.embedded_texts: list[str] = []
+        self.error: Exception | None = None  # set to make every call raise
 
     async def embed_texts(self, texts):
+        if self.error:
+            raise self.error
         self.embedded_texts.extend(texts)
         return [[float(i)] * self.dimensions for i, _ in enumerate(texts)]
 
@@ -95,9 +106,12 @@ class FakeChatService:
     def __init__(self, answer: str = "Answer."):
         self.answer = answer
         self.calls: list[tuple[str, list[dict]]] = []
+        self.unavailable = False  # set to simulate the model being unavailable
 
     async def generate_answer(self, query, context_blocks):
         self.calls.append((query, context_blocks))
+        if self.unavailable:
+            raise ChatUnavailableError("Chat model request failed (RateLimitError)")
         return self.answer
 
 
