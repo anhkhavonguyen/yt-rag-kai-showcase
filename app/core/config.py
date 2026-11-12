@@ -6,7 +6,6 @@ Configuration management for the RAG application.
 Handles environment variables and application settings.
 """
 
-import os
 from typing import Literal
 from pydantic_settings import BaseSettings
 from pydantic import Field

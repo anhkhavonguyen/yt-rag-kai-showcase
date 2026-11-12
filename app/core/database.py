@@ -188,8 +188,8 @@ class Database:
         try:
             client = self.get_client(admin=True)
             
-            # Simple query to test connection
-            result = client.table('rag_chunks').select('id').limit(1).execute()
+            # Simple query to test connection (raises if the database is unreachable)
+            client.table('rag_chunks').select('id').limit(1).execute()
             
             return True  # If no exception, connection is healthy
             

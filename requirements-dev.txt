@@ -1,0 +1,11 @@
+# Development and CI dependencies. Not installed in the Docker image.
+# Install with: pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Lint: exact pin so results don't change when ruff adds rules.
+# CI's lint job installs this exact line, so keep it in the form "ruff==X.Y.Z".
+ruff==0.17.4
+
+# Tests
+pytest>=9,<10
+httpx>=0.27  # needed by fastapi.testclient.TestClient

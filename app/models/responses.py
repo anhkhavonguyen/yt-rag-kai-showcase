@@ -5,7 +5,7 @@
 Response models for the RAG API endpoints.
 """
 
-from typing import List, Dict, Any
+from typing import List
 from pydantic import BaseModel, Field
 
 

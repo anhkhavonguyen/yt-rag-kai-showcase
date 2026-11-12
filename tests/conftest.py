@@ -1,0 +1,135 @@
+"""
+Shared test setup.
+
+The application reads its settings and builds its service objects when modules
+are imported, so placeholder settings must be in the environment before
+anything under `app` is imported. Environment variables take precedence over a
+developer's local `.env`, so real credentials are never used by the tests.
+"""
+
+import os
+
+PLACEHOLDER_SETTINGS = {
+    "SUPABASE_URL": "https://placeholder.supabase.co",
+    "SUPABASE_ANON_KEY": "placeholder-anon-key",
+    "SUPABASE_SERVICE_ROLE_KEY": "placeholder-service-role-key",
+    "OPENAI_API_KEY": "placeholder-openai-key",
+    "ANTHROPIC_API_KEY": "placeholder-anthropic-key",
+    "AI_PROVIDER": "openai",
+}
+
+# Direct assignment (not setdefault): overwrite anything already in the shell.
+os.environ.update(PLACEHOLDER_SETTINGS)
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+import app.core.database  # noqa: E402
+import app.main  # noqa: E402
+from app.services.chat import chat_service  # noqa: E402
+from app.services.embedding import embedding_service  # noqa: E402
+from app.services.rag import rag_service  # noqa: E402
+
+
+class _ForbiddenClient:
+    """Stands in for a real API client; any use fails the test."""
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def __getattr__(self, attr):
+        raise AssertionError(f"Test tried to use the real {self._name} client ({attr})")
+
+
+@pytest.fixture(autouse=True)
+def block_external_services(monkeypatch):
+    """Guarantee no test reaches OpenAI, Anthropic or Supabase."""
+
+    def forbid_supabase(*args, **kwargs):
+        raise AssertionError("Test tried to create a Supabase client")
+
+    monkeypatch.setattr(app.core.database, "create_client", forbid_supabase)
+    monkeypatch.setattr(embedding_service, "openai_client", _ForbiddenClient("OpenAI embeddings"))
+    monkeypatch.setattr(chat_service, "client", _ForbiddenClient("chat model"))
+
+
+class FakeEmbeddingService:
+    """Returns a fixed-size vector per text and records what it was asked to embed."""
+
+    def __init__(self, dimensions: int = 3):
+        self.dimensions = dimensions
+        self.embedded_texts: list[str] = []
+
+    async def embed_texts(self, texts):
+        self.embedded_texts.extend(texts)
+        return [[float(i)] * self.dimensions for i, _ in enumerate(texts)]
+
+    async def embed_query(self, query):
+        return (await self.embed_texts([query]))[0]
+
+
+class FakeDatabase:
+    """In-memory stand-in for the Supabase-backed `db` object."""
+
+    def __init__(self, search_results=None, healthy: bool = True):
+        self.search_results = list(search_results or [])
+        self.healthy = healthy
+        self.upserted: list[dict] = []
+        self.search_calls: list[tuple[list[float], int]] = []
+
+    async def upsert_chunks(self, chunks):
+        self.upserted.extend(chunks)
+        return len(chunks)
+
+    async def vector_search(self, query_embedding, top_k=6):
+        self.search_calls.append((query_embedding, top_k))
+        return self.search_results[:top_k]
+
+    async def health_check(self):
+        return self.healthy
+
+
+class FakeChatService:
+    """Returns a canned answer and records the context it was given."""
+
+    def __init__(self, answer: str = "Answer."):
+        self.answer = answer
+        self.calls: list[tuple[str, list[dict]]] = []
+
+    async def generate_answer(self, query, context_blocks):
+        self.calls.append((query, context_blocks))
+        return self.answer
+
+
+@pytest.fixture
+def fake_embedding():
+    return FakeEmbeddingService()
+
+
+@pytest.fixture
+def fake_db():
+    return FakeDatabase()
+
+
+@pytest.fixture
+def fake_chat():
+    return FakeChatService()
+
+
+@pytest.fixture
+def rag(monkeypatch, fake_embedding, fake_db, fake_chat):
+    """The real `rag_service` with its external dependencies replaced by fakes."""
+    monkeypatch.setattr(rag_service, "embedding_service", fake_embedding)
+    monkeypatch.setattr(rag_service, "db", fake_db)
+    monkeypatch.setattr(rag_service, "chat_service", fake_chat)
+    return rag_service
+
+
+@pytest.fixture
+def client():
+    """HTTP client for the app.
+
+    Deliberately not used as a context manager: that would run the FastAPI
+    lifespan, which connects to Supabase.
+    """
+    return TestClient(app.main.app)
