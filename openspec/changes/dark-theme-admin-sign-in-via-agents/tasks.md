@@ -210,6 +210,13 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   **Paused**: the free tier can't serve this request right now. Run 3, the last one allowed, is held until the provider is available. The user decides when to retry and with which model.
 
   **Decision (owner, 2026-11-12):** don't wait for the quota and don't use the Gemini API. Run 3 uses `--handoff` (task 3.7, design decision 14), with each request answered by a Claude Code sub-agent: a back-end, a front-end or a reviewer sub-agent, each seeing only its own request file. The verification above still applies: an approved run, and a `run.log` showing the orchestrator dispatching to and receiving from every agent in every round.
+
+  3. `20261112-211215`, with `--handoff`, answered by Claude Code sub-agents:
+     - the back end replied in 313 s (`admin_session.py` created, `main.py` +142 -31);
+     - the front end replied in 815 s (4 files);
+     - the orchestrator sent the reviewer its job. The owner stopped the reviewer sub-agent before it wrote a verdict and chose **"skip the review"**, so the run was stopped while waiting for the reviewer.
+
+  **Not met as written:** the run did not end "approved", and there was no reviewer verdict. `run.log` (in `agent-run/`) shows round 1 dispatching to and receiving from both builders, and dispatching to the reviewer. Left unchecked for that reason.
 - [ ] 5.2 Read the approved run's `changes.diff` completely, and check:
   - the cookie attributes;
   - `compare_digest` for the token and the signature;
@@ -221,7 +228,27 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - no new imports outside the standard library, FastAPI, Starlette and pydantic.
 
   Verify: record the findings here. A problem that must be fixed goes into the task file and triggers a new run, which counts toward the 3 runs in 5.1.
+
+  Findings: there was no approved run, so the round-1 files of run 3 were read instead.
+
+  **Back end** (`app/main.py`, `app/core/admin_session.py`), read in full. Everything checks out:
+  - the cookie is `httponly`, `samesite=strict`, `path=/`, `max_age` 8 hours, and `secure` only in production;
+  - `compare_digest` is used for both the token and the signature;
+  - only "Admin sign-in failed" is logged, and the cookie holds `v1.<time>.<hmac>`;
+  - `/seed` compares the `Origin` host exactly with `Host`, and is still protected;
+  - only `/admin/verify` was removed;
+  - the only new imports are `time` and `urllib.parse`.
+
+  **Front end:** not read line by line. It was checked by the tests (no hex colors in the pages, no external URLs, labels, content kept) and by a search, which finds no `sessionStorage`, `/admin/verify` or `Authorization` in the pages.
+
+  **Known limitation, not a bug:** with `SameSite=Strict`, opening `/admin` from a link on another site (such as the Render dashboard) doesn't send the cookie on that first visit. The sign-in page shows instead, and a reload fixes it. `SameSite=Lax` would avoid this; that is a possible follow-up.
+
+  **Also noted by the front-end agent:** `--border` is 1.66:1 on `--surface`, below WCAG's 3:1 for input borders. It isn't required by the spec; a palette follow-up.
+
+  Left unchecked: the front end wasn't read line by line, and no approved run's `changes.diff` existed.
 - [ ] 5.3 Run `python -m orchestrator --apply orchestrator_runs/<run>`, then `ruff check .`. Verify: apply exits 0 with the full test suite passing, including 4.1 to 4.3, and ruff passes.
+
+  Done differently: `--apply` refuses unapproved runs, so the six round-1 files were copied into the project by hand, as the owner chose. Then `pytest` gave 303 passed and 1 skipped (symbolic links), including every acceptance test from 4.1 to 4.3, and `ruff check .` passed. Left unchecked, because the apply command and its restore-on-failure safety were not used.
 - [ ] 5.4 Check in a browser, locally with `SEED_TOKEN=local-test`:
   - `/chat`, `/admin/login` and `/admin` are dark, including with DevTools emulating a light `prefers-color-scheme`;
   - no page scrolls sideways at 375 px wide;
@@ -236,16 +263,29 @@ Model runs use the Gemini free tier from `.env` (`orchestrator/README.md`, "Set 
   - the browser console shows no errors.
 
   Verify: record the results. If a check fails, fix it with another agent run (as in 5.1 and 5.2) or by hand under 5.5.
-- [ ] 5.5 Record the agents' share: list the files applied unchanged from the run, and every hand edit made afterwards with its reason, or "none". Verify: `git diff` shows no change to the applied files beyond the edits listed.
-- [ ] 5.6 Copy the applied run's `run.log`, `transcript.md` and `changes.diff` to `openspec/changes/dark-theme-admin-sign-in-via-agents/agent-run/` (design decision 13). Verify: the three files are there, and searching them for the `OPENAI_API_KEY` value from `.env` finds nothing.
-- [ ] 5.7 Update the docs:
+
+  **Not done yet** in a real browser by the implementer. Partial evidence: the front-end agent checked in headless Chrome at 375 px wide, in its scratch copy. No page scrolled sideways. Edit, then Save getting 401, then the inline sign-in (empty token, wrong token, then the right token) brought back the edits. The next Save sent the cookie and an `Origin` header, with no `Authorization` header.
+- [x] 5.5 Record the agents' share: list the files applied unchanged from the run, and every hand edit made afterwards with its reason, or "none". Verify: `git diff` shows no change to the applied files beyond the edits listed.
+
+  All six files were applied unchanged from `orchestrator_runs/20261112-211215/round-1/files/`: `app/main.py`, `app/core/admin_session.py`, `static/theme.css`, `static/chat.html`, `static/admin-login.html` and `static/admin.html`. Hand edits: none.
+- [x] 5.6 Copy the applied run's `run.log`, `transcript.md` and `changes.diff` to `openspec/changes/dark-theme-admin-sign-in-via-agents/agent-run/` (design decision 13). Verify: the three files are there, and searching them for the `OPENAI_API_KEY` value from `.env` finds nothing.
+
+  `agent-run/` holds:
+  - `run.log`, unedited;
+  - `changes.diff`, the six files as applied, against HEAD;
+  - a `README.md` that says who answered each call and how the files reached the project.
+
+  There is no `transcript.md`: the orchestrator writes it when a run ends, and run 3 was stopped. A search for the API key in the folder finds nothing.
+- [x] 5.7 Update the docs:
   - in `DEPLOYMENT.md` section 4, the "Admin page" bullet becomes: open `/admin`, sign in with `SEED_TOKEN`, and the session lasts 8 hours or until Sign out;
   - change the public-endpoints line;
   - in the README "Seed Knowledge Base" section, describe the sign-in page;
   - in `render.yaml`, change the `SEED_TOKEN` comment to say it is used to sign in at `/admin/login` and by `chatbot.py`.
 
   Verify: every URL in the new text matches a route in `app/main.py`, and `grep -n -i "admin/verify\|sessionStorage\|for that browser tab" DEPLOYMENT.md README.md render.yaml` finds nothing.
-- [ ] 5.8 Commit the acceptance tests, the applied app files, the docs and `agent-run/` together. Verify: `pytest` and `ruff check .` pass on the commit, and `git status` is clean.
+- [x] 5.8 Commit the acceptance tests, the applied app files, the docs and `agent-run/` together. Verify: `pytest` and `ruff check .` pass on the commit, and `git status` is clean.
+
+  The owner committed the acceptance tests separately first (`9242cef`). The applied files, the docs and `agent-run/` follow in the next commit, where `pytest` gives 303 passed and 1 skipped, and `ruff check .` passes.
 
 ## 6. Deploy and verify end to end (owner + implementer)
 

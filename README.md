@@ -152,7 +152,7 @@ curl http://localhost:8000/healthz
 ```
 
 ### Seed Knowledge Base
-To edit and seed documents in the browser, open the admin page at [http://localhost:8000/admin](http://localhost:8000/admin). When `SEED_TOKEN` is set, it asks for that token first. Or use the API:
+To edit and seed documents in the browser, open the admin page at [http://localhost:8000/admin](http://localhost:8000/admin). When `SEED_TOKEN` is set, it first sends you to the sign-in page at `/admin/login`, where you sign in with that token. The session lasts 8 hours or until you sign out. Or use the API:
 
 ```bash
 # Seed with default documents

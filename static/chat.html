@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
     <title>Customer Support</title>
+    <link rel="stylesheet" href="/static/theme.css">
     <style>
         * {
             margin: 0;
@@ -11,24 +13,7 @@
             box-sizing: border-box;
         }
 
-        :root {
-            --primary-color: #4f46e5;
-            --primary-light: #6366f1;
-            --primary-dark: #4338ca;
-            --text-primary: #1f2937;
-            --text-secondary: #6b7280;
-            --text-muted: #9ca3af;
-            --bg-primary: #f9fafb;
-            --bg-secondary: #ffffff;
-            --border-color: #e5e7eb;
-            --border-light: #f3f4f6;
-            --shadow: 0 4px 20px rgba(0,0,0,0.08);
-            --shadow-lg: 0 10px 40px rgba(0,0,0,0.12);
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 25%, #f8fafc 50%, #f1f5f9 100%);
             min-height: 100vh;
             display: flex;
             justify-content: center;
@@ -40,12 +25,12 @@
             width: 100%;
             max-width: 900px;
             height: 90vh;
-            background: var(--bg-secondary);
+            background: var(--surface);
             border-radius: 24px;
-            box-shadow: var(--shadow-lg);
-            border: 1px solid var(--border-light);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+            border: 1px solid var(--border);
             display: grid;
-            grid-template-columns: 1fr;
+            grid-template-columns: minmax(0, 1fr);
             overflow: hidden;
             backdrop-filter: blur(10px);
         }
@@ -59,23 +44,23 @@
         }
 
         .chat-header {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
+            background: var(--surface);
+            color: var(--text);
             padding: 20px;
             text-align: left;
-            border-bottom: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border);
         }
 
         .chat-header h1 {
             font-size: 20px;
             font-weight: 600;
             margin-bottom: 4px;
-            color: var(--text-primary);
+            color: var(--text);
         }
 
         .chat-header p {
             font-size: 14px;
-            color: var(--text-secondary);
+            color: var(--text-muted);
             margin: 0;
         }
 
@@ -85,19 +70,19 @@
             font-size: 12px;
             font-weight: 400;
             transition: all 0.3s ease;
-            background: var(--bg-primary);
+            background: var(--bg);
             color: var(--text-muted);
-            border-bottom: 1px solid var(--border-light);
+            border-bottom: 1px solid var(--border);
         }
 
-        .status.connected { 
-            color: #6b7280;
+        .status.connected {
+            color: var(--success);
         }
-        .status.error { 
-            color: #9ca3af;
+        .status.error {
+            color: var(--danger);
         }
-        .status.warning { 
-            color: #9ca3af;
+        .status.warning {
+            color: var(--danger);
         }
 
         .chat-messages {
@@ -105,7 +90,7 @@
             padding: 20px;
             overflow-y: auto;
             overflow-x: hidden;
-            background: var(--bg-primary);
+            background: var(--bg);
             min-height: 0; /* Important for flex scrolling */
             max-height: 100%; /* Ensure it doesn't exceed container */
         }
@@ -123,88 +108,90 @@
 
         .message-content {
             max-width: 70%;
+            min-width: 0;
             padding: 15px 20px;
             border-radius: 20px;
             word-wrap: break-word;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow-wrap: anywhere;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
             position: relative;
         }
 
         .message.bot .message-content {
-            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
-            color: var(--text-primary);
+            background: var(--surface-raised);
+            color: var(--text);
             border-bottom-left-radius: 8px;
-            border: 1px solid #bae6fd;
+            border: 1px solid var(--border);
         }
 
         .message.user .message-content {
-            background: var(--text-primary);
-            color: grey;
+            background: var(--accent);
+            color: var(--on-accent);
             border-bottom-right-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.1);
+            border: 1px solid var(--accent);
         }
 
         .message-avatar {
             width: 40px;
             height: 40px;
+            flex-shrink: 0;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 18px;
             margin: 0 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
         }
 
         .message.bot .message-avatar {
-            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
-            color: grey;
-            border: 2px solid white;
+            background: var(--accent);
+            color: var(--on-accent);
+            border: 2px solid var(--border);
         }
 
         .message.user .message-avatar {
-            background: var(--text-primary);
-            color: grey;
-            border: 2px solid white;
+            background: var(--surface-raised);
+            color: var(--text);
+            border: 2px solid var(--border);
         }
 
         .citations {
             font-size: 12px;
             margin-top: 10px;
-            opacity: 0.8;
             font-style: italic;
             padding: 8px 12px;
-            background: rgba(255,255,255,0.3);
+            background: var(--surface);
+            color: var(--text-muted);
             border-radius: 10px;
         }
 
         .chat-input {
             padding: 20px;
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border-color);
+            background: var(--surface);
+            border-top: 1px solid var(--border);
             display: flex;
             gap: 10px;
         }
 
         .chat-input input {
             flex: 1;
+            min-width: 0;
             padding: 15px 20px;
-            border: 2px solid var(--border-color);
+            border: 2px solid var(--border);
             border-radius: 25px;
             font-size: 16px;
-            outline: none;
             transition: all 0.3s ease;
         }
 
         .chat-input input:focus {
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--accent);
         }
 
         .chat-input button {
             padding: 10px 16px;
-            background: var(--text-primary);
-            color: white;
+            background: var(--accent);
+            color: var(--on-accent);
             border: none;
             border-radius: 12px;
             cursor: pointer;
@@ -216,25 +203,26 @@
         }
 
         .chat-input button:hover {
-            background: var(--primary-color);
+            filter: brightness(1.1);
             transform: none;
         }
 
         .chat-input button:disabled {
-            background: var(--text-muted);
+            background: var(--surface-raised);
+            color: var(--text-muted);
             cursor: not-allowed;
-            opacity: 0.6;
+            filter: none;
         }
 
         .typing-indicator {
             display: none;
             padding: 16px 20px;
-            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+            background: var(--surface-raised);
             border-radius: 20px;
             margin: 10px 0;
             width: fit-content;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            border: 1px solid #bae6fd;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
             align-items: center;
             gap: 12px;
         }
@@ -256,7 +244,7 @@
             width: 6px;
             height: 6px;
             border-radius: 50%;
-            background: var(--primary-color);
+            background: var(--accent);
             animation: typing 1.4s infinite both;
         }
 
@@ -284,16 +272,16 @@
             body {
                 padding: 10px;
             }
-            
+
             .app-container {
                 border-radius: 10px;
                 height: 95vh;
             }
-            
+
             .message-content {
                 max-width: 85%;
             }
-            
+
             .chat-header h1 {
                 font-size: 20px;
             }
@@ -308,9 +296,9 @@
                 <h1>Customer Support</h1>
                 <p>Chat with our AI assistant for help with orders, returns, and policies</p>
             </div>
-            
+
             <div class="status" id="status">Checking connection...</div>
-            
+
             <div class="chat-messages" id="messages">
                 <div class="message bot">
                     <div class="message-avatar">✨</div>
@@ -324,11 +312,11 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="typing-indicator" id="typing">
                 <div class="message-avatar">💭</div>
                 <div class="typing-content">
-                    <span style="color: var(--text-secondary); font-size: 14px; margin-right: 8px;">Thinking</span>
+                    <span style="color: var(--text-muted); font-size: 14px; margin-right: 8px;">Thinking</span>
                     <div class="typing-dots">
                         <span></span>
                         <span></span>
@@ -336,9 +324,9 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="chat-input">
-                <input type="text" id="messageInput" placeholder="Ask me anything about our policies..." maxlength="500">
+                <input type="text" id="messageInput" aria-label="Your question" placeholder="Ask me anything about our policies..." maxlength="500">
                 <button onclick="sendMessage()" id="sendBtn">Send</button>
             </div>
         </div>
@@ -393,22 +381,22 @@
         function addMessage(content, isUser = false, citations = []) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
-            
+
             const avatar = document.createElement('div');
             avatar.className = 'message-avatar';
             avatar.textContent = isUser ? '👤' : '✨';
-            
+
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             contentDiv.innerHTML = content.replace(/\n/g, '<br>');
-            
+
             if (citations.length > 0) {
                 const citationsDiv = document.createElement('div');
                 citationsDiv.className = 'citations';
                 citationsDiv.innerHTML = `📚 Sources: ${citations.join(', ')}`;
                 contentDiv.appendChild(citationsDiv);
             }
-            
+
             if (isUser) {
                 messageDiv.appendChild(contentDiv);
                 messageDiv.appendChild(avatar);
@@ -416,7 +404,7 @@
                 messageDiv.appendChild(avatar);
                 messageDiv.appendChild(contentDiv);
             }
-            
+
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
