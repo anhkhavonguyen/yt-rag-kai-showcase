@@ -8,7 +8,6 @@ Enhanced with rich styling, colors, and modern UI elements.
 """
 
 import requests
-import json
 import sys
 import time
 import os
@@ -24,7 +23,6 @@ try:
     from rich.table import Table
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from rich.markdown import Markdown
-    from rich.syntax import Syntax
     from rich import box
     from rich.align import Align
     RICH_AVAILABLE = True
@@ -40,7 +38,6 @@ except ImportError:
         from rich.table import Table
         from rich.progress import Progress, SpinnerColumn, TextColumn
         from rich.markdown import Markdown
-        from rich.syntax import Syntax
         from rich import box
         from rich.align import Align
         RICH_AVAILABLE = True
@@ -325,7 +322,7 @@ class RAGChatbot:
             console=self.console,
             transient=True,
         ) as progress:
-            task = progress.add_task("🤔 Thinking...", total=None)
+            progress.add_task("🤔 Thinking...", total=None)
             time.sleep(0.5)  # Brief animation
     
     def run(self):
@@ -412,7 +409,7 @@ class RAGChatbot:
                             TextColumn("[progress.description]{task.description}"),
                             console=self.console,
                         ) as progress:
-                            task = progress.add_task("🌱 Seeding documents...", total=None)
+                            progress.add_task("🌱 Seeding documents...", total=None)
                             result = self.seed_documents()
                     else:
                         print("🌱 Seeding documents...")

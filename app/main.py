@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, Response, JSONResponse
 from .core.config import get_settings
 from .core.database import db
 from .models.requests import SeedRequest, AnswerRequest
-from .models.responses import SeedResponse, AnswerResponse, HealthResponse, ErrorResponse
+from .models.responses import SeedResponse, AnswerResponse, HealthResponse
 from .services.rag import rag_service
 from .data.default_documents import DEFAULT_DOCUMENTS
 

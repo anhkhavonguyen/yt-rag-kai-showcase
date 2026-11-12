@@ -1,5 +1,7 @@
 # RAG AI Agent Backend
 
+[![CI](https://github.com/anhkhavonguyen/yt-rag-kai-showcase/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/anhkhavonguyen/yt-rag-kai-showcase/actions/workflows/ci.yml)
+
 A minimal, production-ready FastAPI backend demonstrating **Retrieval-Augmented Generation (RAG)** with vector similarity search. Built for educational purposes and easy frontend integration.
 
 📹 Full YouTube Guide: [Youtube link](https://www.youtube.com/watch?v=ZREt9MAozho&list=PLE9hy4A7ZTmpGq7GHf5tgGFWh2277AeDR&index=24)
@@ -292,24 +294,25 @@ yt-rag/
 
 ## 🛠️ Development
 
-### Running Tests
-```bash
-# Install dev dependencies
-pip install pytest pytest-asyncio httpx
+### Running checks locally
 
-# Run tests (coming soon)
+CI (GitHub Actions, [.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these same checks on every push and pull request to `main`. You don't need API keys to run them. The tests use placeholder settings and replace OpenAI, Anthropic and Supabase with test doubles, even if your machine has a real `.env`.
+
+```bash
+# Install runtime + development dependencies (pytest, ruff)
+pip install -r requirements-dev.txt
+
+# Lint (same pinned ruff version and rule set as CI)
+ruff check .
+
+# Tests (offline, no credentials needed)
 pytest
+
+# Optional: check that the Docker image still builds
+docker build -t yt-rag:ci .
 ```
 
-### Code Quality
-```bash
-# Format code
-black app/
-isort app/
-
-# Lint code
-flake8 app/
-```
+`test_setup.py`, `verify_rag.py` and `check_dimensions.py` are manual scripts that talk to real services. `pytest` does not run them.
 
 ## 🤝 Contributing
 

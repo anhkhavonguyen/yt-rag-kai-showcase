@@ -9,7 +9,7 @@ Orchestrates the complete RAG pipeline: chunk → embed → search → generate.
 import logging
 import time
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from ..core.database import db
 from .embedding import embedding_service
 from .chat import chat_service

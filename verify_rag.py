@@ -8,7 +8,6 @@ This will show actual embeddings, similarity scores, and vector operations.
 """
 
 import os
-import json
 import asyncio
 from dotenv import load_dotenv
 from supabase import create_client
