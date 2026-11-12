@@ -311,6 +311,16 @@ yt-rag/
 └── README.md           # This file
 ```
 
+## 🤖 Agent Orchestrator
+
+A separate learning example in [`orchestrator/`](orchestrator/README.md). A back-end agent writes a small FastAPI app, a front-end agent writes the page that calls it, and a reviewer agent checks both. An orchestrator routes each review issue to the agent that owns it until the reviewer approves. It uses the same `OPENAI_*` settings as the app, so it runs on Gemini's free tier, and it needs no Supabase settings.
+
+```bash
+python -m orchestrator "a to-do list app"
+```
+
+See [orchestrator/README.md](orchestrator/README.md) for the flow, the options, what each run saves and how to run the generated app.
+
 ## 🛠️ Development
 
 ### Running checks locally

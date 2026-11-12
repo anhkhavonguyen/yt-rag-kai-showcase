@@ -20,4 +20,7 @@ build/
 *.egg-info/
 
 # Local development settings
-.DS_Store 
+.DS_Store
+
+# Agent orchestrator output (python -m orchestrator)
+orchestrator_runs/
