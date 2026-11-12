@@ -7,15 +7,6 @@ Run it for free: Render + Google Gemini + Supabase, no payment method needed. Se
 
 A minimal, production-ready FastAPI backend demonstrating **Retrieval-Augmented Generation (RAG)** with vector similarity search. Built for educational purposes and easy frontend integration.
 
-📹 Full YouTube Guide: [Youtube link](https://www.youtube.com/watch?v=ZREt9MAozho&list=PLE9hy4A7ZTmpGq7GHf5tgGFWh2277AeDR&index=24)
-
-🚀 X Post: [X link](https://x.com/ShenSeanChen/status/1964074873296388546)
-
-💡 Try the RAG AI Agent: [App link](https://yt-rag-431569812034.us-east1.run.app/chat)
-
-☕️ Buy me a coffee: [Cafe Latte](https://buy.stripe.com/5kA176bA895ggog4gh)
-
-🤖️ Discord: [Invite link](https://discord.com/invite/TKKPzZheua)
 
 ## 🎯 Features
 
@@ -311,6 +302,16 @@ yt-rag/
 └── README.md           # This file
 ```
 
+## 🤖 Agent Orchestrator
+
+A separate learning example in [`orchestrator/`](orchestrator/README.md). A back-end agent writes a small FastAPI app, a front-end agent writes the page that calls it, and a reviewer agent checks both. An orchestrator routes each review issue to the agent that owns it until the reviewer approves. It uses the same `OPENAI_*` settings as the app, so it runs on Gemini's free tier, and it needs no Supabase settings.
+
+```bash
+python -m orchestrator "a to-do list app"
+```
+
+See [orchestrator/README.md](orchestrator/README.md) for the flow, the options, what each run saves and how to run the generated app.
+
 ## 🛠️ Development
 
 ### Running checks locally
@@ -346,21 +347,10 @@ docker build -t yt-rag:ci .
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙋‍♂️ Support
-
-- 📚 **Documentation**: Check the `/docs` endpoint when running
-- 🐛 **Issues**: [GitHub Issues](https://github.com/ShenSeanChen/yt-rag/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/ShenSeanChen/yt-rag/discussions)
-
 ---
 
 **Built with ❤️ for the developer community**
 
 *This project demonstrates modern RAG architecture patterns and is perfect for learning, prototyping, or building production applications.*
-
-## 💖 Support / Sponsors
-
-If my open-source work saves you time, consider [**becoming a sponsor**](https://github.com/sponsors/ShenSeanChen). It keeps these repos maintained, documented, and free.
-
-[![Sponsor @ShenSeanChen](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ShenSeanChen)
 
 <!-- sponsors --><!-- sponsors -->

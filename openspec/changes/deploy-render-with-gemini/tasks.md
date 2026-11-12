@@ -29,11 +29,13 @@ Implement on a branch from `main` after `add-github-actions-ci` is merged. Group
   - `dimensions` is sent or omitted per the setting.
 
   Verify: `pytest` and `ruff check .` pass.
-- [ ] 2.4 Document the provider settings:
+- [x] 2.4 Document the provider settings:
   - In `.env.example`, add a commented "Free: Google Gemini (OpenAI-compatible)" block with the base URL, model names, `EMBEDDING_DIMENSIONS` and the values from task 1.2. Note that `OPENAI_API_KEY` holds the Gemini key, and that switching the embedding model needs a re-seed.
   - In the README "AI Providers" section, describe `OPENAI_BASE_URL`.
 
   Verify: running the app locally with the Gemini block copied into `.env` gives a 200 from `POST /seed` and a 200 from `POST /answer` with citations.
+
+  Result (2026-11-12): locally, `/healthz`, the 401s, embeddings and `/answer` (`no_results` on the empty database) all worked. Local seeding hit row-level security because the local `.env` had the publishable key in `SUPABASE_SERVICE_ROLE_KEY`. With the secret key on the deployed service, the same settings seeded 4 chunks and `/answer` returned `generated` with citations.
 
 ## 3. Fallback answer (spec: question-answering)
 
@@ -71,7 +73,7 @@ Implement on a branch from `main` after `add-github-actions-ci` is merged. Group
   - no `PORT` entry.
 
   Verify: the file parses as YAML, `plan` is `free`, and no `envVars` entry carries a secret value. Grep for `key`, `secret` and `token` values to confirm.
-- [ ] 5.2 Rewrite `DEPLOYMENT.md` as the free deployment guide:
+- [x] 5.2 Rewrite `DEPLOYMENT.md` as the free deployment guide:
   - Gemini key, Supabase project and schema (with the legacy `anon`/`service_role` key note), and New Blueprint in Render with the four prompted secrets;
   - where to find the generated `SEED_TOKEN`; seeding through the chat page or `chatbot.py <url>`;
   - cold starts and free-tier limits, the re-seed note, the Gemini free-tier data-use note, and changing secrets later in the Environment tab;
@@ -81,19 +83,28 @@ Implement on a branch from `main` after `add-github-actions-ci` is merged. Group
 
 ## 6. Deploy and verify end to end (owner + implementer)
 
-- [ ] 6.1 Merge this change to `main` through a pull request whose `lint`, `test` and `docker-build` checks are green. Verify: the CI run on `main` passes.
-- [ ] 6.2 Owner follows `DEPLOYMENT.md`: in Render, choose New Blueprint, pick the GitHub repo, review the preview, enter the four secrets, and apply. Verify:
+- [x] 6.1 Merge this change to `main` through a pull request whose `lint`, `test` and `docker-build` checks are green. Verify: the CI run on `main` passes.
+- [x] 6.2 Owner follows `DEPLOYMENT.md`: in Render, choose New Blueprint, pick the GitHub repo, review the preview, enter the four secrets, and apply. Verify:
   - the preview shows exactly one free web service built from `./Dockerfile`;
   - no payment method is requested;
   - the first deploy goes live after the CI checks on `main`;
   - `GET https://<service>.onrender.com/healthz` returns `{"status": "ok", "database_connected": true}`.
-- [ ] 6.3 On the deployed URL:
+- [x] 6.3 On the deployed URL:
   - `POST /seed` without a token returns 401;
   - saving the default documents in the chat page prompts for the `SEED_TOKEN` from the Render dashboard, then succeeds;
   - a question about returns gets an answer with citations and `debug.answer_mode: "generated"`.
 
   Verify by recording the `/answer` JSON.
-- [ ] 6.4 Exercise the fallback in production: temporarily set `OPENAI_CHAT_MODEL` to a non-existent model in the Render Environment tab, ask a question, then restore the value. Verify: the answer has `debug.answer_mode: "extractive"`, cites the retrieved chunks, and has no provider error text; after the restore, `generated` returns.
+
+  Result (https://yt-rag-umo6.onrender.com, 2026-11-12):
+  - `POST /seed` without a token returned 401.
+  - The owner seeded the 4 default documents.
+  - "How long does shipping take?" returned `answer_mode: generated`, citations `["policy_shipping_v1#1"]`, in 3.5 s.
+- [x] 6.4 Exercise the fallback in production: temporarily set `OPENAI_CHAT_MODEL` to a non-existent model in the Render Environment tab, ask a question, then restore the value. Verify: the answer has `debug.answer_mode: "extractive"`, cites the retrieved chunks, and has no provider error text; after the restore, `generated` returns.
+
+  Result: the free tier caused this on its own, so no config change was needed.
+  - "What is your return policy?" returned `extractive` after 47 s (timeout plus retry). It listed the 4 retrieved passages under the fixed lead sentence, cited all 4, and contained no provider text.
+  - The next question returned `generated`.
 
 ## Workflow follow-up
 
