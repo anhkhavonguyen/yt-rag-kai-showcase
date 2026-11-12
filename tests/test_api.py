@@ -192,6 +192,39 @@ def test_seed_is_open_when_no_token_configured(client, monkeypatch, mock_seed, u
     mock_seed.assert_awaited_once()
 
 
+# --- admin token check for the admin page ---------------------------------------
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Authorization": "Bearer wrong-token"}, {"Authorization": "Basic czNjcmV0"}],
+    ids=["missing", "wrong", "not-bearer"],
+)
+def test_admin_verify_rejects_missing_or_wrong_token(client, seed_token, mock_seed, headers):
+    response = client.get("/admin/verify", headers=headers)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    mock_seed.assert_not_awaited()
+
+
+def test_admin_verify_accepts_correct_token(client, seed_token, mock_seed):
+    response = client.get("/admin/verify", headers={"Authorization": f"Bearer {seed_token}"})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    mock_seed.assert_not_awaited()
+
+
+@pytest.mark.parametrize("unset", [None, ""])
+def test_admin_verify_is_open_when_no_token_configured(client, monkeypatch, mock_seed, unset):
+    monkeypatch.setattr(app.main.settings, "seed_token", unset)
+
+    response = client.get("/admin/verify")
+
+    assert response.status_code == 200
+    mock_seed.assert_not_awaited()
+
+
 def test_other_endpoints_do_not_need_the_token(client, seed_token, mock_answer, monkeypatch):
     monkeypatch.setattr(app.main.db, "health_check", AsyncMock(return_value=True))
 
@@ -199,6 +232,27 @@ def test_other_endpoints_do_not_need_the_token(client, seed_token, mock_answer, 
     assert client.get("/healthz").status_code == 200
     assert client.get("/documents").status_code == 200
     assert client.get("/").status_code == 200
+    assert client.get("/chat").status_code == 200
+    assert client.get("/admin").status_code == 200
+
+
+# --- pages ----------------------------------------------------------------------
+
+def test_admin_page_is_served_without_a_token(client, seed_token):
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<title>Knowledge Base Editor</title>" in response.text
+
+
+def test_chat_page_has_no_knowledge_base_editing(client):
+    response = client.get("/chat")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    for admin_only in ("Knowledge Base Editor", "/seed", "/admin"):
+        assert admin_only not in response.text
 
 
 @pytest.mark.parametrize(
