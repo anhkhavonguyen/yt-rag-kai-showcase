@@ -1,0 +1,1671 @@
+diff --git a/app/core/admin_session.py b/app/core/admin_session.py
+new file mode 100644
+index 0000000..34c6744
+--- /dev/null
++++ b/app/core/admin_session.py
+@@ -0,0 +1,51 @@
++# Copyright 2024
++# Directory: yt-rag/app/core/admin_session.py
++
++"""
++Stateless signed session for the admin pages.
++
++The session value is "v1.<issued_at>.<signature>": `issued_at` is a Unix time in
++whole seconds and `signature` is the hex HMAC-SHA256 of "admin-session:v1:<issued_at>"
++keyed with the admin token (SEED_TOKEN). Nothing is stored on the server, the value
++never contains the token, and changing the token ends every session.
++"""
++
++import hashlib
++import hmac
++import re
++
++COOKIE_NAME = "admin_session"
++SESSION_SECONDS = 8 * 60 * 60
++
++# Exactly "v1.<issued_at>.<64 lowercase hex digits>", with issued_at written as int()
++# writes it (no leading zeros or "+"). Its length is bounded so int() never fails.
++_VALUE = re.compile(r"v1\.(0|-?[1-9][0-9]{0,19})\.([0-9a-f]{64})")
++
++
++def _signature(token: str, issued_at: int) -> str:
++    """The hex HMAC-SHA256 of the session message, keyed with the token (UTF-8)."""
++    message = f"admin-session:v1:{issued_at}".encode("ascii")
++    return hmac.new(token.encode("utf-8"), message, hashlib.sha256).hexdigest()
++
++
++def issue(token: str, now: float) -> str:
++    """A session value issued at `now` for `token`."""
++    issued_at = int(now)
++    return f"v1.{issued_at}.{_signature(token, issued_at)}"
++
++
++def is_valid(value: str | None, token: str, now: float) -> bool:
++    """Whether `value` is a session issued for `token` less than SESSION_SECONDS ago."""
++    if not isinstance(value, str) or not isinstance(token, str):
++        return False
++    match = _VALUE.fullmatch(value)
++    if match is None:
++        return False
++    issued_at = int(match.group(1))
++    try:
++        expected = _signature(token, issued_at)
++    except UnicodeEncodeError:  # a token that isn't valid text signs no session
++        return False
++    if not hmac.compare_digest(match.group(2), expected):
++        return False
++    return 0 <= now - issued_at < SESSION_SECONDS
+diff --git a/app/main.py b/app/main.py
+index b755e4a..53c9436 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -8,14 +8,17 @@ Provides endpoints for document seeding and question answering with citations.
+ 
+ import hmac
+ import logging
++import time
+ from contextlib import asynccontextmanager
+ from typing import Optional
+-from fastapi import Depends, FastAPI, HTTPException
++from urllib.parse import urlsplit
++from fastapi import Depends, FastAPI, HTTPException, Request
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+ from fastapi.staticfiles import StaticFiles
+-from fastapi.responses import FileResponse, Response, JSONResponse
++from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
+ 
++from .core import admin_session
+ from .core.config import get_settings
+ from .core.database import db
+ from .models.requests import SeedRequest, AnswerRequest
+@@ -34,21 +37,77 @@ settings = get_settings()
+ 
+ _seed_bearer = HTTPBearer(auto_error=False)
+ 
++# Admin pages and their redirects are never cached, so signing out or a session
++# ending always shows in the browser.
++_NO_STORE = {"Cache-Control": "no-store"}
+ 
+-async def require_seed_token(
++
++def _is_seed_token(provided: str, expected: str) -> bool:
++    """Whether `provided` is the admin token, compared as UTF-8 bytes in constant time."""
++    try:
++        provided_bytes = provided.encode()
++    except UnicodeEncodeError:  # e.g. a lone surrogate from a JSON body: never the token
++        return False
++    return hmac.compare_digest(provided_bytes, expected.encode())
++
++
++def _has_admin_session(request: Request, token: str) -> bool:
++    """Whether the request carries a valid admin session cookie for `token`."""
++    value = request.cookies.get(admin_session.COOKIE_NAME)
++    return admin_session.is_valid(value, token, time.time())
++
++
++def admin_signed_in(request: Request) -> bool:
++    """Whether the request may use the admin page.
++
++    True when no token is configured (local development), or when the request
++    carries a valid admin session for SEED_TOKEN.
++    """
++    token = settings.seed_token
++    if not token:
++        return True
++    return _has_admin_session(request, token)
++
++
++def _origin_is_this_site(request: Request) -> bool:
++    """Whether the request's Origin names the host the request was sent to.
++
++    Hosts are compared, not schemes: behind the hosting proxy the app sees http
++    while browsers send https. A missing Origin or "Origin: null" doesn't match.
++    """
++    origin = request.headers.get("origin")
++    host = request.headers.get("host")
++    if not origin or not host:
++        return False
++    try:
++        origin_host = urlsplit(origin).netloc
++    except ValueError:  # e.g. a malformed IPv6 address
++        return False
++    return bool(origin_host) and origin_host == host
++
++
++async def require_seed_access(
++    request: Request,
+     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_seed_bearer),
+ ) -> None:
+-    """Reject /seed requests without the admin token, when SEED_TOKEN is configured."""
++    """Reject /seed requests from anyone but the admin, when SEED_TOKEN is configured.
++
++    The admin is a request with "Authorization: Bearer <SEED_TOKEN>", or one from
++    the signed-in admin page: a valid session cookie, sent from this site.
++    """
+     expected = settings.seed_token
+     if not expected:
+         return  # no token configured: /seed stays open (local development)
+     provided = credentials.credentials if credentials else ""
+-    if not hmac.compare_digest(provided.encode(), expected.encode()):
+-        raise HTTPException(
+-            status_code=401,
+-            detail="Missing or invalid admin token",
+-            headers={"WWW-Authenticate": "Bearer"},
+-        )
++    if _is_seed_token(provided, expected):
++        return
++    if _origin_is_this_site(request) and _has_admin_session(request, expected):
++        return
++    raise HTTPException(
++        status_code=401,
++        detail="Missing or invalid admin token",
++        headers={"WWW-Authenticate": "Bearer"},
++    )
+ 
+ 
+ def warn_if_seed_unprotected() -> None:
+@@ -117,23 +176,74 @@ async def chat_interface():
+ 
+ 
+ @app.get("/admin", include_in_schema=False)
+-async def admin_interface():
+-    """Serve the knowledge base admin page.
++async def admin_interface(request: Request):
++    """Serve the knowledge base admin page to the signed-in admin.
++
++    Without a valid admin session (when SEED_TOKEN is configured) this answers 303
++    to the sign-in page /admin/login. Neither answer is cached.
++    """
++    if admin_signed_in(request):
++        return FileResponse("static/admin.html", headers=_NO_STORE)
++    return RedirectResponse("/admin/login", status_code=303, headers=_NO_STORE)
+ 
+-    The HTML is public (browsers send no bearer token when navigating); the page
+-    checks the admin token with /admin/verify before showing the editor.
++
++@app.get("/admin/login", include_in_schema=False)
++async def admin_login_page(request: Request):
++    """Serve the admin sign-in page, or send a signed-in admin on to /admin.
++
++    With no token configured there is nothing to sign in to, so this also answers
++    303 to /admin. Neither answer is cached.
+     """
+-    return FileResponse("static/admin.html")
++    if admin_signed_in(request):
++        return RedirectResponse("/admin", status_code=303, headers=_NO_STORE)
++    return FileResponse("static/admin-login.html", headers=_NO_STORE)
+ 
+ 
+-@app.get("/admin/verify", include_in_schema=False, dependencies=[Depends(require_seed_token)])
+-async def verify_admin_token():
+-    """Check the admin token for the admin page, without side effects.
++@app.post("/admin/login", include_in_schema=False)
++async def admin_sign_in(request: Request):
++    """Start an admin session for the body {"token": "<SEED_TOKEN>"}.
+ 
+-    200 when the request carries SEED_TOKEN, or when no token is configured;
+-    otherwise require_seed_token answers 401.
++    204 with the session cookie on the right token; 401 on anything else, with no
++    cookie. The body is read by hand, so a bad body is a 401 and never echoed back
++    (a pydantic body would answer 422 with the input). With no token configured,
++    answers 204 without a cookie: the admin page is open anyway.
+     """
+-    return {"ok": True}
++    expected = settings.seed_token
++    if not expected:
++        return Response(status_code=204)
++    try:
++        body = await request.json()
++    except ValueError:  # not JSON, or not UTF-8
++        body = None
++    provided = body.get("token") if isinstance(body, dict) else None
++    if not isinstance(provided, str) or not _is_seed_token(provided, expected):
++        logger.warning("Admin sign-in failed")  # never the body or the token
++        return JSONResponse(status_code=401, content={"detail": "Admin token rejected"})
++    response = Response(status_code=204)
++    response.set_cookie(
++        admin_session.COOKIE_NAME,
++        admin_session.issue(expected, time.time()),
++        max_age=admin_session.SESSION_SECONDS,
++        path="/",
++        secure=settings.environment == "production",
++        httponly=True,
++        samesite="strict",
++    )
++    return response
++
++
++@app.post("/admin/logout", include_in_schema=False)
++async def admin_sign_out():
++    """End the admin session in this browser by deleting its cookie (204 either way)."""
++    response = Response(status_code=204)
++    response.delete_cookie(
++        admin_session.COOKIE_NAME,
++        path="/",
++        secure=settings.environment == "production",
++        httponly=True,
++        samesite="strict",
++    )
++    return response
+ 
+ 
+ @app.get("/favicon.ico", include_in_schema=False)
+@@ -208,7 +318,7 @@ async def get_documents():
+     "/seed",
+     response_model=SeedResponse,
+     tags=["RAG"],
+-    dependencies=[Depends(require_seed_token)],
++    dependencies=[Depends(require_seed_access)],
+ )
+ async def seed_documents(request: SeedRequest = SeedRequest()):
+     """
+@@ -216,7 +326,8 @@ async def seed_documents(request: SeedRequest = SeedRequest()):
+ 
+     If no documents are provided, seeds with default policy/FAQ documents.
+     Documents are chunked, embedded, and stored in the vector database.
+-    When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>".
++    When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>", or the
++    signed-in admin session sent from this site (the admin page).
+     """
+     try:
+         logger.info("Starting document seeding process")
+diff --git a/static/admin-login.html b/static/admin-login.html
+new file mode 100644
+index 0000000..ec7f3e2
+--- /dev/null
++++ b/static/admin-login.html
+@@ -0,0 +1,151 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++    <meta charset="UTF-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1.0">
++    <meta name="color-scheme" content="dark">
++    <title>Admin sign in</title>
++    <link rel="stylesheet" href="/static/theme.css">
++    <style>
++        * {
++            box-sizing: border-box;
++        }
++
++        body {
++            min-height: 100vh;
++            display: flex;
++            padding: 20px;
++        }
++
++        /* Centered; margin: auto keeps the card reachable on short screens. */
++        .sign-in-card {
++            width: 100%;
++            max-width: 400px;
++            margin: auto;
++            padding: 28px 24px;
++            background: var(--surface);
++            border: 1px solid var(--border);
++            border-radius: 16px;
++            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
++        }
++
++        .sign-in-card h1 {
++            margin: 0 0 8px;
++            font-size: 20px;
++            font-weight: 600;
++        }
++
++        .intro {
++            margin: 0 0 20px;
++            color: var(--text-muted);
++            font-size: 14px;
++            line-height: 1.5;
++        }
++
++        .sign-in-form {
++            display: flex;
++            flex-direction: column;
++            gap: 10px;
++        }
++
++        .sign-in-form label {
++            font-size: 14px;
++            font-weight: 500;
++        }
++
++        .sign-in-form input {
++            width: 100%;
++            padding: 12px 14px;
++            border-width: 2px;
++            border-radius: 8px;
++            font-size: 16px;
++            transition: border-color 0.2s ease;
++        }
++
++        .sign-in-form input:focus {
++            border-color: var(--accent);
++        }
++
++        .sign-in-form button {
++            padding: 12px 16px;
++            font-size: 15px;
++        }
++
++        .form-message {
++            min-height: 1.5em;
++            margin: 0;
++            font-size: 14px;
++            font-weight: 500;
++        }
++
++        .back-link {
++            display: inline-block;
++            margin-top: 12px;
++            font-size: 14px;
++            font-weight: 500;
++            text-decoration: none;
++        }
++
++        .back-link:hover {
++            text-decoration: underline;
++        }
++    </style>
++</head>
++<body>
++    <main class="sign-in-card">
++        <h1>Admin sign in</h1>
++        <p class="intro" id="intro">Enter this deployment's admin token (SEED_TOKEN) to manage the knowledge base.</p>
++        <form class="sign-in-form" id="signInForm" novalidate>
++            <label for="tokenInput">Admin token</label>
++            <input id="tokenInput" type="password" autocomplete="current-password" aria-describedby="intro" autofocus>
++            <button type="submit" class="button-primary" id="signInBtn">Sign in</button>
++            <p id="message" class="form-message text-error" role="alert"></p>
++        </form>
++        <a class="back-link" href="/chat">← Back to Customer Support</a>
++    </main>
++
++    <script>
++        const signInForm = document.getElementById('signInForm');
++        const tokenInput = document.getElementById('tokenInput');
++        const signInBtn = document.getElementById('signInBtn');
++        const message = document.getElementById('message');
++
++        // POST /admin/login answers 204 with the session cookie for the right token,
++        // and 401 for any other. The token is sent once and kept nowhere in the page.
++        signInForm.addEventListener('submit', async function(e) {
++            e.preventDefault();
++            const token = tokenInput.value.trim();
++            if (!token) {
++                message.textContent = 'Enter the admin token';
++                tokenInput.focus();
++                return;
++            }
++
++            signInBtn.disabled = true;
++            message.textContent = '';
++            try {
++                const response = await fetch('/admin/login', {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ token })
++                });
++                if (response.status === 204) {
++                    location.replace('/admin');
++                    return; // the button stays disabled while the editor opens
++                }
++                if (response.status === 401) {
++                    message.textContent = 'Admin token rejected';
++                    tokenInput.select();
++                } else {
++                    message.textContent = "Can't sign in right now. Please try again.";
++                    tokenInput.focus();
++                }
++            } catch (error) {
++                message.textContent = "Can't reach the server";
++                tokenInput.focus();
++            }
++            signInBtn.disabled = false;
++        });
++    </script>
++</body>
++</html>
+diff --git a/static/admin.html b/static/admin.html
+index cb2791e..e0369e8 100644
+--- a/static/admin.html
++++ b/static/admin.html
+@@ -3,7 +3,9 @@
+ <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
++    <meta name="color-scheme" content="dark">
+     <title>Knowledge Base Editor</title>
++    <link rel="stylesheet" href="/static/theme.css">
+     <style>
+         * {
+             margin: 0;
+@@ -11,24 +13,7 @@
+             box-sizing: border-box;
+         }
+ 
+-        :root {
+-            --primary-color: #4f46e5;
+-            --primary-light: #6366f1;
+-            --primary-dark: #4338ca;
+-            --text-primary: #1f2937;
+-            --text-secondary: #6b7280;
+-            --text-muted: #9ca3af;
+-            --bg-primary: #f9fafb;
+-            --bg-secondary: #ffffff;
+-            --border-color: #e5e7eb;
+-            --border-light: #f3f4f6;
+-            --shadow: 0 4px 20px rgba(0,0,0,0.08);
+-            --shadow-lg: 0 10px 40px rgba(0,0,0,0.12);
+-        }
+-
+         body {
+-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+-            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 25%, #f8fafc 50%, #f1f5f9 100%);
+             min-height: 100vh;
+             display: flex;
+             justify-content: center;
+@@ -36,104 +21,81 @@
+             padding: 20px;
+         }
+ 
+-        [hidden] {
+-            display: none !important;
+-        }
+-
+         .admin-container {
+             width: 100%;
+             max-width: 900px;
+             height: 90vh;
+-            background: var(--bg-secondary);
++            background: var(--surface);
+             border-radius: 24px;
+-            box-shadow: var(--shadow-lg);
+-            border: 1px solid var(--border-light);
++            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
++            border: 1px solid var(--border);
+             overflow: hidden;
+             display: flex;
+             flex-direction: column;
+         }
+ 
+-        /* Access check and token form */
+-        .checking {
+-            flex: 1;
+-            display: flex;
+-            align-items: center;
+-            justify-content: center;
+-            color: var(--text-secondary);
+-            font-size: 14px;
+-            background: var(--bg-primary);
+-        }
+-
++        /* Inline sign-in: shown in place of the editor when Save is refused */
+         .gate {
+             flex: 1;
+             display: flex;
+-            align-items: center;
+-            justify-content: center;
+             padding: 20px;
+-            background: var(--bg-primary);
++            background: var(--bg);
++            overflow-y: auto;
+         }
+ 
+         .gate-form {
+             width: 100%;
+             max-width: 380px;
+-            background: var(--bg-secondary);
+-            border: 1px solid var(--border-color);
++            margin: auto;
++            background: var(--surface);
++            border: 1px solid var(--border);
+             border-radius: 12px;
+             padding: 24px;
+-            box-shadow: var(--shadow);
++            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+             display: flex;
+             flex-direction: column;
+             gap: 10px;
+         }
+ 
+         .gate-form h2 {
+-            color: var(--text-primary);
++            color: var(--text);
+             font-size: 18px;
+             font-weight: 600;
+         }
+ 
+-        .gate-form p,
++        .gate-form p {
++            color: var(--text-muted);
++            font-size: 14px;
++        }
++
+         .gate-form label {
+-            color: var(--text-secondary);
++            color: var(--text);
+             font-size: 14px;
++            font-weight: 500;
+         }
+ 
+         .gate-form input {
+             padding: 12px 14px;
+-            border: 2px solid var(--border-color);
++            border: 2px solid var(--border);
+             border-radius: 8px;
+-            font-size: 15px;
+-            outline: none;
++            font-size: 16px;
+             transition: border-color 0.2s ease;
+         }
+ 
+         .gate-form input:focus {
+-            border-color: var(--primary-color);
++            border-color: var(--accent);
+         }
+ 
+         .gate-form button {
+             padding: 12px 16px;
+-            background: var(--primary-color);
+-            color: white;
+-            border: none;
+             border-radius: 8px;
+             font-size: 14px;
+             font-weight: 500;
+-            cursor: pointer;
+-        }
+-
+-        .gate-form button:hover {
+-            background: var(--primary-dark);
+-        }
+-
+-        .gate-form button:disabled {
+-            background: #ccc;
+-            cursor: not-allowed;
+         }
+ 
+         .gate-form .gate-message {
+             min-height: 20px;
+-            color: #b91c1c;
++            color: var(--danger);
+             font-weight: 500;
+         }
+ 
+@@ -141,36 +103,49 @@
+         .editor-section {
+             display: flex;
+             flex-direction: column;
+-            background: var(--bg-primary);
++            background: var(--bg);
+             flex: 1;
+             min-height: 0; /* Important for flex scrolling */
+         }
+ 
+         .editor-header {
+             padding: 20px;
+-            background: var(--bg-secondary);
+-            border-bottom: 1px solid var(--border-color);
++            background: var(--surface);
++            border-bottom: 1px solid var(--border);
+             display: flex;
++            flex-wrap: wrap;
+             justify-content: space-between;
+             align-items: flex-start;
+             gap: 16px;
+         }
+ 
++        .header-title {
++            flex: 1 1 240px;
++            min-width: 0;
++        }
++
++        .header-actions {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: center;
++            gap: 12px;
++        }
++
+         .editor-header h1 {
+-            color: var(--text-primary);
++            color: var(--text);
+             font-size: 20px;
+             font-weight: 600;
+             margin-bottom: 4px;
+         }
+ 
+         .editor-header p {
+-            color: var(--text-secondary);
++            color: var(--text-muted);
+             font-size: 14px;
+             margin: 0;
+         }
+ 
+         .back-link {
+-            color: var(--primary-color);
++            color: var(--accent);
+             font-size: 14px;
+             font-weight: 500;
+             text-decoration: none;
+@@ -181,10 +156,15 @@
+             text-decoration: underline;
+         }
+ 
++        .header-actions .button-secondary {
++            font-size: 14px;
++            font-weight: 500;
++        }
++
+         .editor-tabs {
+             display: flex;
+-            background: var(--bg-secondary);
+-            border-bottom: 1px solid var(--border-color);
++            background: var(--surface);
++            border-bottom: 1px solid var(--border);
+         }
+ 
+         .tab-button {
+@@ -195,15 +175,19 @@
+             cursor: pointer;
+             font-size: 14px;
+             font-weight: 500;
+-            color: var(--text-secondary);
++            color: var(--text-muted);
+             transition: all 0.2s ease;
+             border-bottom: 2px solid transparent;
+         }
+ 
++        .tab-button:focus-visible {
++            outline-offset: -2px;
++        }
++
+         .tab-button.active {
+-            color: var(--primary-color);
+-            border-bottom-color: var(--primary-color);
+-            background: rgba(102, 126, 234, 0.03);
++            color: var(--accent);
++            border-bottom-color: var(--accent);
++            background: var(--surface-raised);
+         }
+ 
+         .tab-content {
+@@ -216,39 +200,46 @@
+         }
+ 
+         .document-item {
+-            background: var(--bg-secondary);
+-            border: 1px solid var(--border-color);
++            background: var(--surface);
++            border: 1px solid var(--border);
+             border-radius: 12px;
+             margin-bottom: 15px;
+             overflow: hidden;
+-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
++            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+             transition: all 0.3s ease;
+         }
+ 
+         .document-item:hover {
+             transform: translateY(-2px);
+-            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
++            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+         }
+ 
+         .document-header {
+             padding: 15px 20px;
+-            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+-            border-bottom: 1px solid var(--border-color);
++            background: var(--surface-raised);
++            border-bottom: 1px solid var(--border);
+             display: flex;
+             justify-content: space-between;
+             align-items: center;
+         }
+ 
++        .document-header > div {
++            min-width: 0;
++        }
++
+         .document-id {
++            display: block;
+             font-weight: 600;
+-            color: var(--primary-color);
++            color: var(--accent);
+             font-size: 14px;
++            overflow-wrap: anywhere;
+         }
+ 
+         .document-source {
+             font-size: 12px;
+-            color: var(--text-secondary);
++            color: var(--text-muted);
+             font-style: italic;
++            overflow-wrap: anywhere;
+         }
+ 
+         .document-text {
+@@ -256,29 +247,34 @@
+         }
+ 
+         .document-text textarea {
++            display: block;
+             width: 100%;
+             min-height: 120px;
+-            border: none;
+-            outline: none;
++            padding: 12px;
++            border-radius: 8px;
+             font-family: inherit;
+             font-size: 14px;
+             line-height: 1.5;
+-            color: var(--text-primary);
+-            background: transparent;
++            color: var(--text);
++            background: var(--surface-raised);
+             resize: vertical;
+         }
+ 
++        .document-text textarea:focus {
++            border-color: var(--accent);
++        }
++
+         .save-section {
+             padding: 24px;
+-            background: var(--bg-secondary);
+-            border-top: 1px solid var(--border-color);
++            background: var(--surface);
++            border-top: 1px solid var(--border);
+         }
+ 
+         .save-button {
+             width: 100%;
+             padding: 14px 16px;
+-            background: var(--primary-color);
+-            color: white;
++            background: var(--accent);
++            color: var(--on-accent);
+             border: none;
+             border-radius: 8px;
+             font-size: 14px;
+@@ -298,53 +294,59 @@
+         }
+ 
+         .save-button.loading {
+-            background: #f59e0b;
+-            color: black;
++            background: var(--surface-raised);
++            color: var(--text);
+         }
+ 
+         .save-button.success {
+-            background: #10b981;
+-            color: grey;
++            background: var(--success);
++            color: var(--on-accent);
+         }
+ 
+         .save-button.error {
+-            background: #ef4444;
+-            color: black;
++            background: var(--danger);
++            color: var(--on-accent);
+         }
+ 
+         .save-button:hover {
+-            background: var(--primary-dark);
++            filter: brightness(1.1);
+             transform: none;
+         }
+ 
+         .save-button:disabled {
+-            background: #ccc;
++            background: var(--surface-raised);
++            color: var(--text-muted);
+             cursor: not-allowed;
+             transform: none;
+             box-shadow: none;
++            filter: none;
+         }
+ 
+         .notification {
+             position: fixed;
+             top: 20px;
+             right: 20px;
++            max-width: calc(100vw - 40px);
+             padding: 15px 20px;
+             border-radius: 12px;
+-            color: grey;
++            background: var(--accent);
++            color: var(--on-accent);
+             font-weight: 600;
+             z-index: 1000;
+-            transform: translateX(400px);
++            transform: translateX(calc(100% + 40px));
++            visibility: hidden;
+             transition: all 0.3s ease;
+-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
++            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+         }
+ 
+         .notification.show {
+             transform: translateX(0);
++            visibility: visible;
+         }
+ 
+-        .notification.success { background: var(--success-color); }
+-        .notification.error { background: var(--error-color); }
+-        .notification.info { background: var(--info-color); }
++        .notification.success { background: var(--success); color: var(--on-accent); }
++        .notification.error { background: var(--danger); color: var(--on-accent); }
++        .notification.info { background: var(--accent); color: var(--on-accent); }
+ 
+         @media (max-width: 768px) {
+             body {
+@@ -359,36 +361,60 @@
+             .editor-header h1 {
+                 font-size: 16px;
+             }
++
++            .editor-header,
++            .tab-content {
++                padding: 16px;
++            }
++
++            .document-header {
++                padding: 12px 16px;
++            }
++
++            .document-text {
++                padding: 16px;
++            }
++
++            .save-section {
++                padding: 16px;
++            }
++
++            .notification {
++                top: 10px;
++                right: 10px;
++                max-width: calc(100vw - 20px);
++            }
+         }
+     </style>
+ </head>
+ <body>
+     <div class="admin-container">
+         <div class="editor-header">
+-            <div>
++            <div class="header-title">
+                 <h1>📋 Knowledge Base Editor</h1>
+                 <p>Edit documents and update the vector database</p>
+             </div>
+-            <a class="back-link" href="/chat">← Back to chat</a>
++            <div class="header-actions">
++                <a class="back-link" href="/chat">← Back to chat</a>
++                <button type="button" class="button-secondary" id="signOutBtn">Sign out</button>
++            </div>
+         </div>
+ 
+-        <!-- Shown while the admin token is being checked -->
+-        <div class="checking" id="checking">Checking access…</div>
+-
+-        <!-- Token form: shown when the server asks for the admin token -->
++        <!-- Inline sign-in: shown when Save is refused because the session has ended.
++             The editor is only hidden meanwhile, so the unsaved edits stay in the page. -->
+         <div class="gate" id="gate" hidden>
+-            <form class="gate-form" id="gateForm" novalidate>
+-                <h2>🔒 Admin token required</h2>
+-                <p>Enter this deployment's admin token (<code>SEED_TOKEN</code>) to edit the knowledge base.</p>
++            <form class="gate-form" id="gateForm" novalidate aria-labelledby="gateTitle">
++                <h2 id="gateTitle">🔒 Admin sign in</h2>
++                <p id="gateIntro">Your session has ended. Sign in again to save your changes.</p>
+                 <label for="tokenInput">Admin token</label>
+-                <input type="password" id="tokenInput" autocomplete="current-password">
+-                <button type="submit" id="gateBtn">Continue</button>
++                <input type="password" id="tokenInput" autocomplete="current-password" aria-describedby="gateIntro">
++                <button type="submit" class="button-primary" id="gateBtn">Sign in</button>
+                 <p class="gate-message" id="gateMessage" role="alert"></p>
+             </form>
+         </div>
+ 
+-        <!-- Document Editor Section: shown once access is granted -->
+-        <div class="editor-section" id="editorSection" hidden>
++        <!-- Document Editor Section -->
++        <div class="editor-section" id="editorSection">
+             <div class="editor-tabs">
+                 <button class="tab-button active" onclick="switchTab('documents')">Documents</button>
+                 <button class="tab-button" onclick="switchTab('settings')">Settings</button>
+@@ -401,12 +427,12 @@
+             </div>
+ 
+             <div class="tab-content" id="settingsTab" style="display: none;">
+-                <div style="text-align: center; padding: 40px 20px; color: var(--text-secondary);">
++                <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+                     <h3>⚙️ Settings</h3>
+                     <p>Advanced settings and configurations coming soon!</p>
+                     <br>
+-                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; text-align: left;">
+-                        <h4 style="margin-bottom: 10px;">Current Configuration:</h4>
++                    <div style="background: var(--surface); border: 1px solid var(--border); padding: 20px; border-radius: 12px; text-align: left;">
++                        <h4 style="margin-bottom: 10px; color: var(--text);">Current Configuration:</h4>
+                         <p><strong>API Endpoint:</strong> http://localhost:8000</p>
+                         <p><strong>Embedding Model:</strong> text-embedding-3-small</p>
+                         <p><strong>Chat Model:</strong> gpt-4o</p>
+@@ -424,69 +450,50 @@
+     </div>
+ 
+     <!-- Notification -->
+-    <div class="notification" id="notification"></div>
++    <div class="notification" id="notification" role="status"></div>
+ 
+     <script>
+-        // Automatically detect the correct API base URL
+-        const API_BASE_URL = window.location.origin;
+         const documentsContainer = document.getElementById('documentsContainer');
+         const saveBtn = document.getElementById('saveBtn');
+         const notification = document.getElementById('notification');
+-        const checkingView = document.getElementById('checking');
+         const gateView = document.getElementById('gate');
+         const gateForm = document.getElementById('gateForm');
+         const tokenInput = document.getElementById('tokenInput');
+         const gateBtn = document.getElementById('gateBtn');
+         const gateMessage = document.getElementById('gateMessage');
+         const editorSection = document.getElementById('editorSection');
++        const signOutBtn = document.getElementById('signOutBtn');
+ 
+         let documents = [];
+-        let documentsLoaded = false;
+         let currentTab = 'documents';
+ 
+-        // Check the remembered token (or none) before showing anything. The
+-        // server allows any request when no SEED_TOKEN is configured.
+-        async function init() {
+-            const token = getSeedToken();
+-            try {
+-                const response = await verifyToken(token);
+-                if (response.ok) {
+-                    await showEditor();
+-                } else if (response.status === 401) {
+-                    setSeedToken('');
+-                    showGate(token ? 'Admin token rejected' : '');
+-                } else {
+-                    showGate("Can't check the token right now. Please try again.");
+-                }
+-            } catch (error) {
+-                showGate("Can't reach the server");
+-            }
+-        }
++        // The server serves this page only to the signed-in admin (or to anyone
++        // when no admin token is configured), so the editor opens right away. The
++        // session cookie goes with every request to this site by itself.
+ 
+-        function verifyToken(token) {
+-            const headers = {};
+-            if (token) { headers['Authorization'] = `Bearer ${token}`; }
+-            return fetch(`${API_BASE_URL}/admin/verify`, { headers, cache: 'no-store' });
++        // Shows the inline sign-in in place of the editor. The editor is only
++        // hidden, so its textareas and the in-memory documents keep the edits.
++        function showSignIn() {
++            editorSection.hidden = true;
++            gateView.hidden = false;
++            gateMessage.textContent = '';
++            tokenInput.value = '';
++            tokenInput.focus();
+         }
+ 
+-        async function showEditor() {
+-            checkingView.hidden = true;
++        // Back to the editor as it was (the documents are not reloaded), ready to Save.
++        function showEditor() {
+             gateView.hidden = true;
+             editorSection.hidden = false;
+-            // Documents are fetched once; later re-entries keep unsaved edits.
+-            if (!documentsLoaded) {
+-                documentsLoaded = true;
+-                await loadDocuments();
+-            }
++            saveBtn.focus();
+         }
+ 
+-        function showGate(message) {
+-            checkingView.hidden = true;
+-            editorSection.hidden = true;
+-            gateView.hidden = false;
+-            gateMessage.textContent = message || '';
+-            tokenInput.value = '';
+-            tokenInput.focus();
++        function signIn(token) {
++            return fetch('/admin/login', {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify({ token })
++            });
+         }
+ 
+         gateForm.addEventListener('submit', async function(e) {
+@@ -501,27 +508,44 @@
+             gateBtn.disabled = true;
+             gateMessage.textContent = '';
+             try {
+-                const response = await verifyToken(token);
+-                if (response.ok) {
+-                    setSeedToken(token);
+-                    await showEditor();
++                const response = await signIn(token);
++                if (response.status === 204) {
++                    tokenInput.value = '';
++                    showEditor();
+                 } else if (response.status === 401) {
+                     gateMessage.textContent = 'Admin token rejected';
+                     tokenInput.select();
+                 } else {
+-                    gateMessage.textContent = "Can't check the token right now. Please try again.";
++                    gateMessage.textContent = "Can't sign in right now. Please try again.";
++                    tokenInput.focus();
+                 }
+             } catch (error) {
+                 gateMessage.textContent = "Can't reach the server";
++                tokenInput.focus();
+             } finally {
+                 gateBtn.disabled = false;
+             }
+         });
+ 
++        signOutBtn.addEventListener('click', async function() {
++            signOutBtn.disabled = true;
++            try {
++                const response = await fetch('/admin/logout', { method: 'POST' });
++                if (response.ok) {
++                    location.replace('/admin/login');
++                    return;
++                }
++                showNotification("❌ Can't sign out right now. Please try again.", 'error');
++            } catch (error) {
++                showNotification("❌ Can't reach the server. Please try again.", 'error');
++            }
++            signOutBtn.disabled = false;
++        });
++
+         async function loadDocuments() {
+             try {
+                 // Fetch documents from the API
+-                const response = await fetch(`${API_BASE_URL}/documents`);
++                const response = await fetch('/documents');
+                 if (response.ok) {
+                     const data = await response.json();
+                     documents = data.documents || [];
+@@ -549,7 +573,7 @@
+                 docElement.innerHTML = `
+                     <div class="document-header">
+                         <div>
+-                            <div class="document-id">${doc.chunk_id}</div>
++                            <label class="document-id" for="doc-${index}">${doc.chunk_id}</label>
+                             <div class="document-source">${doc.source}</div>
+                         </div>
+                     </div>
+@@ -583,28 +607,12 @@
+             document.getElementById('settingsTab').style.display = tabName === 'settings' ? 'block' : 'none';
+         }
+ 
+-        // Admin token for /admin/verify and POST /seed (deployments that set
+-        // SEED_TOKEN). Kept in sessionStorage, i.e. only for this browser tab;
+-        // storage can be blocked, so every access is guarded.
+-        const SEED_TOKEN_KEY = 'ytRagSeedToken';
+-
+-        function getSeedToken() {
+-            try { return sessionStorage.getItem(SEED_TOKEN_KEY) || ''; } catch (e) { return ''; }
+-        }
+-
+-        function setSeedToken(token) {
+-            try {
+-                if (token) { sessionStorage.setItem(SEED_TOKEN_KEY, token); }
+-                else { sessionStorage.removeItem(SEED_TOKEN_KEY); }
+-            } catch (e) { /* storage unavailable: token is just not remembered */ }
+-        }
+-
+-        function postSeed(token) {
+-            const headers = { 'Content-Type': 'application/json' };
+-            if (token) { headers['Authorization'] = `Bearer ${token}`; }
+-            return fetch(`${API_BASE_URL}/seed`, {
++        // POST /seed with every document. The browser sends the admin session
++        // cookie with it.
++        function postSeed() {
++            return fetch('/seed', {
+                 method: 'POST',
+-                headers,
++                headers: { 'Content-Type': 'application/json' },
+                 body: JSON.stringify({ docs: documents })
+             });
+         }
+@@ -619,14 +627,13 @@
+             saveText.innerHTML = '🔄 Saving...';
+ 
+             try {
+-                const response = await postSeed(getSeedToken());
++                const response = await postSeed();
+ 
+                 if (response.status === 401) {
+-                    // Token rejected (e.g. rotated since the page opened): forget it
+-                    // and ask again. The in-memory documents keep the unsaved edits.
+-                    setSeedToken('');
++                    // The session has ended (it expired, or the admin token changed):
++                    // sign in again in place. The in-memory documents keep the unsaved edits.
+                     saveText.innerHTML = originalText;
+-                    showGate('Admin token rejected — enter the current token');
++                    showSignIn();
+                     return;
+                 }
+ 
+@@ -670,8 +677,8 @@
+             }, 4000);
+         }
+ 
+-        // Initialize the page last, once every constant above is defined.
+-        init();
++        // Load the documents last, once every constant above is defined.
++        loadDocuments();
+     </script>
+ </body>
+ </html>
+diff --git a/static/chat.html b/static/chat.html
+index 887c758..5936791 100644
+--- a/static/chat.html
++++ b/static/chat.html
+@@ -3,7 +3,9 @@
+ <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
++    <meta name="color-scheme" content="dark">
+     <title>Customer Support</title>
++    <link rel="stylesheet" href="/static/theme.css">
+     <style>
+         * {
+             margin: 0;
+@@ -11,24 +13,7 @@
+             box-sizing: border-box;
+         }
+ 
+-        :root {
+-            --primary-color: #4f46e5;
+-            --primary-light: #6366f1;
+-            --primary-dark: #4338ca;
+-            --text-primary: #1f2937;
+-            --text-secondary: #6b7280;
+-            --text-muted: #9ca3af;
+-            --bg-primary: #f9fafb;
+-            --bg-secondary: #ffffff;
+-            --border-color: #e5e7eb;
+-            --border-light: #f3f4f6;
+-            --shadow: 0 4px 20px rgba(0,0,0,0.08);
+-            --shadow-lg: 0 10px 40px rgba(0,0,0,0.12);
+-        }
+-
+         body {
+-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+-            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 25%, #f8fafc 50%, #f1f5f9 100%);
+             min-height: 100vh;
+             display: flex;
+             justify-content: center;
+@@ -40,12 +25,12 @@
+             width: 100%;
+             max-width: 900px;
+             height: 90vh;
+-            background: var(--bg-secondary);
++            background: var(--surface);
+             border-radius: 24px;
+-            box-shadow: var(--shadow-lg);
+-            border: 1px solid var(--border-light);
++            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
++            border: 1px solid var(--border);
+             display: grid;
+-            grid-template-columns: 1fr;
++            grid-template-columns: minmax(0, 1fr);
+             overflow: hidden;
+             backdrop-filter: blur(10px);
+         }
+@@ -59,23 +44,23 @@
+         }
+ 
+         .chat-header {
+-            background: var(--bg-secondary);
+-            color: var(--text-primary);
++            background: var(--surface);
++            color: var(--text);
+             padding: 20px;
+             text-align: left;
+-            border-bottom: 1px solid var(--border-color);
++            border-bottom: 1px solid var(--border);
+         }
+ 
+         .chat-header h1 {
+             font-size: 20px;
+             font-weight: 600;
+             margin-bottom: 4px;
+-            color: var(--text-primary);
++            color: var(--text);
+         }
+ 
+         .chat-header p {
+             font-size: 14px;
+-            color: var(--text-secondary);
++            color: var(--text-muted);
+             margin: 0;
+         }
+ 
+@@ -85,19 +70,19 @@
+             font-size: 12px;
+             font-weight: 400;
+             transition: all 0.3s ease;
+-            background: var(--bg-primary);
++            background: var(--bg);
+             color: var(--text-muted);
+-            border-bottom: 1px solid var(--border-light);
++            border-bottom: 1px solid var(--border);
+         }
+ 
+-        .status.connected { 
+-            color: #6b7280;
++        .status.connected {
++            color: var(--success);
+         }
+-        .status.error { 
+-            color: #9ca3af;
++        .status.error {
++            color: var(--danger);
+         }
+-        .status.warning { 
+-            color: #9ca3af;
++        .status.warning {
++            color: var(--danger);
+         }
+ 
+         .chat-messages {
+@@ -105,7 +90,7 @@
+             padding: 20px;
+             overflow-y: auto;
+             overflow-x: hidden;
+-            background: var(--bg-primary);
++            background: var(--bg);
+             min-height: 0; /* Important for flex scrolling */
+             max-height: 100%; /* Ensure it doesn't exceed container */
+         }
+@@ -123,88 +108,90 @@
+ 
+         .message-content {
+             max-width: 70%;
++            min-width: 0;
+             padding: 15px 20px;
+             border-radius: 20px;
+             word-wrap: break-word;
+-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
++            overflow-wrap: anywhere;
++            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+             position: relative;
+         }
+ 
+         .message.bot .message-content {
+-            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+-            color: var(--text-primary);
++            background: var(--surface-raised);
++            color: var(--text);
+             border-bottom-left-radius: 8px;
+-            border: 1px solid #bae6fd;
++            border: 1px solid var(--border);
+         }
+ 
+         .message.user .message-content {
+-            background: var(--text-primary);
+-            color: grey;
++            background: var(--accent);
++            color: var(--on-accent);
+             border-bottom-right-radius: 8px;
+-            border: 1px solid rgba(255,255,255,0.1);
++            border: 1px solid var(--accent);
+         }
+ 
+         .message-avatar {
+             width: 40px;
+             height: 40px;
++            flex-shrink: 0;
+             border-radius: 50%;
+             display: flex;
+             align-items: center;
+             justify-content: center;
+             font-size: 18px;
+             margin: 0 10px;
+-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
++            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+         }
+ 
+         .message.bot .message-avatar {
+-            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+-            color: grey;
+-            border: 2px solid white;
++            background: var(--accent);
++            color: var(--on-accent);
++            border: 2px solid var(--border);
+         }
+ 
+         .message.user .message-avatar {
+-            background: var(--text-primary);
+-            color: grey;
+-            border: 2px solid white;
++            background: var(--surface-raised);
++            color: var(--text);
++            border: 2px solid var(--border);
+         }
+ 
+         .citations {
+             font-size: 12px;
+             margin-top: 10px;
+-            opacity: 0.8;
+             font-style: italic;
+             padding: 8px 12px;
+-            background: rgba(255,255,255,0.3);
++            background: var(--surface);
++            color: var(--text-muted);
+             border-radius: 10px;
+         }
+ 
+         .chat-input {
+             padding: 20px;
+-            background: var(--bg-secondary);
+-            border-top: 1px solid var(--border-color);
++            background: var(--surface);
++            border-top: 1px solid var(--border);
+             display: flex;
+             gap: 10px;
+         }
+ 
+         .chat-input input {
+             flex: 1;
++            min-width: 0;
+             padding: 15px 20px;
+-            border: 2px solid var(--border-color);
++            border: 2px solid var(--border);
+             border-radius: 25px;
+             font-size: 16px;
+-            outline: none;
+             transition: all 0.3s ease;
+         }
+ 
+         .chat-input input:focus {
+-            border-color: var(--primary-color);
+-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
++            border-color: var(--accent);
+         }
+ 
+         .chat-input button {
+             padding: 10px 16px;
+-            background: var(--text-primary);
+-            color: white;
++            background: var(--accent);
++            color: var(--on-accent);
+             border: none;
+             border-radius: 12px;
+             cursor: pointer;
+@@ -216,25 +203,26 @@
+         }
+ 
+         .chat-input button:hover {
+-            background: var(--primary-color);
++            filter: brightness(1.1);
+             transform: none;
+         }
+ 
+         .chat-input button:disabled {
+-            background: var(--text-muted);
++            background: var(--surface-raised);
++            color: var(--text-muted);
+             cursor: not-allowed;
+-            opacity: 0.6;
++            filter: none;
+         }
+ 
+         .typing-indicator {
+             display: none;
+             padding: 16px 20px;
+-            background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
++            background: var(--surface-raised);
+             border-radius: 20px;
+             margin: 10px 0;
+             width: fit-content;
+-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+-            border: 1px solid #bae6fd;
++            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
++            border: 1px solid var(--border);
+             align-items: center;
+             gap: 12px;
+         }
+@@ -256,7 +244,7 @@
+             width: 6px;
+             height: 6px;
+             border-radius: 50%;
+-            background: var(--primary-color);
++            background: var(--accent);
+             animation: typing 1.4s infinite both;
+         }
+ 
+@@ -284,16 +272,16 @@
+             body {
+                 padding: 10px;
+             }
+-            
++
+             .app-container {
+                 border-radius: 10px;
+                 height: 95vh;
+             }
+-            
++
+             .message-content {
+                 max-width: 85%;
+             }
+-            
++
+             .chat-header h1 {
+                 font-size: 20px;
+             }
+@@ -308,9 +296,9 @@
+                 <h1>Customer Support</h1>
+                 <p>Chat with our AI assistant for help with orders, returns, and policies</p>
+             </div>
+-            
++
+             <div class="status" id="status">Checking connection...</div>
+-            
++
+             <div class="chat-messages" id="messages">
+                 <div class="message bot">
+                     <div class="message-avatar">✨</div>
+@@ -324,11 +312,11 @@
+                     </div>
+                 </div>
+             </div>
+-            
++
+             <div class="typing-indicator" id="typing">
+                 <div class="message-avatar">💭</div>
+                 <div class="typing-content">
+-                    <span style="color: var(--text-secondary); font-size: 14px; margin-right: 8px;">Thinking</span>
++                    <span style="color: var(--text-muted); font-size: 14px; margin-right: 8px;">Thinking</span>
+                     <div class="typing-dots">
+                         <span></span>
+                         <span></span>
+@@ -336,9 +324,9 @@
+                     </div>
+                 </div>
+             </div>
+-            
++
+             <div class="chat-input">
+-                <input type="text" id="messageInput" placeholder="Ask me anything about our policies..." maxlength="500">
++                <input type="text" id="messageInput" aria-label="Your question" placeholder="Ask me anything about our policies..." maxlength="500">
+                 <button onclick="sendMessage()" id="sendBtn">Send</button>
+             </div>
+         </div>
+@@ -393,22 +381,22 @@
+         function addMessage(content, isUser = false, citations = []) {
+             const messageDiv = document.createElement('div');
+             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
+-            
++
+             const avatar = document.createElement('div');
+             avatar.className = 'message-avatar';
+             avatar.textContent = isUser ? '👤' : '✨';
+-            
++
+             const contentDiv = document.createElement('div');
+             contentDiv.className = 'message-content';
+             contentDiv.innerHTML = content.replace(/\n/g, '<br>');
+-            
++
+             if (citations.length > 0) {
+                 const citationsDiv = document.createElement('div');
+                 citationsDiv.className = 'citations';
+                 citationsDiv.innerHTML = `📚 Sources: ${citations.join(', ')}`;
+                 contentDiv.appendChild(citationsDiv);
+             }
+-            
++
+             if (isUser) {
+                 messageDiv.appendChild(contentDiv);
+                 messageDiv.appendChild(avatar);
+@@ -416,7 +404,7 @@
+                 messageDiv.appendChild(avatar);
+                 messageDiv.appendChild(contentDiv);
+             }
+-            
++
+             messagesContainer.appendChild(messageDiv);
+             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+         }
+@@ -470,4 +458,4 @@
+         }
+     </script>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/static/theme.css b/static/theme.css
+new file mode 100644
+index 0000000..66fe1ac
+--- /dev/null
++++ b/static/theme.css
+@@ -0,0 +1,114 @@
++/*
++ * The one shared stylesheet of every page: a single dark palette.
++ * Pages take every color from these tokens and define none of their own.
++ *
++ * Contrast (WCAG AA, checked by tests/test_theme.py):
++ * - at least 4.5:1 for --text, --text-muted, --danger and --success on --bg and --surface,
++ *   for --text and --text-muted on --surface-raised, and for --on-accent on --accent;
++ * - at least 3:1 for --accent and --focus on --bg, and for --focus on --surface.
++ */
++:root {
++    color-scheme: dark;
++    --bg: #0f1117;
++    --surface: #181b23;
++    --surface-raised: #222632;
++    --text: #e7e9ee;
++    --text-muted: #a4abba;
++    --accent: #8b93ff;
++    --on-accent: #0f1117;
++    --border: #3a4050;
++    --danger: #ff8a8a;
++    --success: #5fd4a0;
++    --focus: #ffd166;
++}
++
++body {
++    margin: 0;
++    background: var(--bg);
++    color: var(--text);
++    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
++}
++
++a {
++    color: var(--accent);
++}
++
++input,
++textarea,
++select {
++    background: var(--surface-raised);
++    color: var(--text);
++    border: 1px solid var(--border);
++    font: inherit;
++}
++
++input::placeholder,
++textarea::placeholder {
++    color: var(--text-muted);
++    opacity: 1;
++}
++
++button {
++    font: inherit;
++}
++
++/* Primary buttons */
++.button-primary {
++    background: var(--accent);
++    color: var(--on-accent);
++    border: 1px solid var(--accent);
++    border-radius: 8px;
++    padding: 10px 16px;
++    font-weight: 600;
++    cursor: pointer;
++}
++
++.button-primary:hover {
++    filter: brightness(1.1);
++}
++
++.button-primary:disabled {
++    background: var(--surface-raised);
++    border-color: var(--border);
++    color: var(--text-muted);
++    cursor: not-allowed;
++    filter: none;
++}
++
++/* Secondary buttons, such as "Sign out" */
++.button-secondary {
++    background: transparent;
++    color: var(--text);
++    border: 1px solid var(--border);
++    border-radius: 8px;
++    padding: 8px 14px;
++    cursor: pointer;
++}
++
++.button-secondary:hover {
++    background: var(--surface-raised);
++}
++
++.button-secondary:disabled {
++    color: var(--text-muted);
++    cursor: not-allowed;
++}
++
++/* Error and success messages */
++.text-error {
++    color: var(--danger);
++}
++
++.text-success {
++    color: var(--success);
++}
++
++[hidden] {
++    display: none !important;
++}
++
++/* Keyboard focus is always visible */
++:focus-visible {
++    outline: 2px solid var(--focus);
++    outline-offset: 2px;
++}

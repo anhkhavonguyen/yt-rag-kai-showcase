@@ -55,7 +55,7 @@ The region can't be changed after the service is created. To use another region,
 
 `/seed` is protected by an admin token. Find it in Render under **yt-rag → Environment → `SEED_TOKEN`**.
 
-- **Admin page:** open `https://<your-service>.onrender.com/admin` and enter the token. The page remembers it for that browser tab only. Edit the documents if you like, then click **Save**.
+- **Admin page:** open `https://<your-service>.onrender.com/admin`. It sends you to the sign-in page, `/admin/login`. Sign in with the token. The session lasts 8 hours, or until you click **Sign out**; changing `SEED_TOKEN` ends every session. Edit the documents if you like, then click **Save**.
 - **curl:**
 
   ```bash
@@ -69,7 +69,7 @@ The region can't be changed after the service is created. To use another region,
   SEED_TOKEN=<SEED_TOKEN> python chatbot.py https://<your-service>.onrender.com
   ```
 
-Without the token, `/seed` returns `401`, and the admin page asks for the token when it opens. Everything else (`/chat`, `/answer`, `/healthz`, `/documents`) is public. The customer chat page has no editor and no link to `/admin`.
+Without the token or a signed-in session, `/seed` returns `401`, and `/admin` redirects to the sign-in page. Everything else (`/chat`, `/answer`, `/healthz`, `/documents`) is public. The customer chat page has no editor and no link to `/admin`.
 
 ## 5. Ask a question
 

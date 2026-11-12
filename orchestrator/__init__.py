@@ -4,5 +4,6 @@
 
 Read the files in this order: __main__.py (wiring), orchestrator.py (the loop and
 the routing rules), agents.py (the three agents), llm.py (the model client).
+project.py holds project mode, where the agents change files of this project.
 See README.md for the flow.
 """

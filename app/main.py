@@ -8,14 +8,17 @@ Provides endpoints for document seeding and question answering with citations.
 
 import hmac
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import Depends, FastAPI, HTTPException
+from urllib.parse import urlsplit
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
 
+from .core import admin_session
 from .core.config import get_settings
 from .core.database import db
 from .models.requests import SeedRequest, AnswerRequest
@@ -34,21 +37,77 @@ settings = get_settings()
 
 _seed_bearer = HTTPBearer(auto_error=False)
 
+# Admin pages and their redirects are never cached, so signing out or a session
+# ending always shows in the browser.
+_NO_STORE = {"Cache-Control": "no-store"}
 
-async def require_seed_token(
+
+def _is_seed_token(provided: str, expected: str) -> bool:
+    """Whether `provided` is the admin token, compared as UTF-8 bytes in constant time."""
+    try:
+        provided_bytes = provided.encode()
+    except UnicodeEncodeError:  # e.g. a lone surrogate from a JSON body: never the token
+        return False
+    return hmac.compare_digest(provided_bytes, expected.encode())
+
+
+def _has_admin_session(request: Request, token: str) -> bool:
+    """Whether the request carries a valid admin session cookie for `token`."""
+    value = request.cookies.get(admin_session.COOKIE_NAME)
+    return admin_session.is_valid(value, token, time.time())
+
+
+def admin_signed_in(request: Request) -> bool:
+    """Whether the request may use the admin page.
+
+    True when no token is configured (local development), or when the request
+    carries a valid admin session for SEED_TOKEN.
+    """
+    token = settings.seed_token
+    if not token:
+        return True
+    return _has_admin_session(request, token)
+
+
+def _origin_is_this_site(request: Request) -> bool:
+    """Whether the request's Origin names the host the request was sent to.
+
+    Hosts are compared, not schemes: behind the hosting proxy the app sees http
+    while browsers send https. A missing Origin or "Origin: null" doesn't match.
+    """
+    origin = request.headers.get("origin")
+    host = request.headers.get("host")
+    if not origin or not host:
+        return False
+    try:
+        origin_host = urlsplit(origin).netloc
+    except ValueError:  # e.g. a malformed IPv6 address
+        return False
+    return bool(origin_host) and origin_host == host
+
+
+async def require_seed_access(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_seed_bearer),
 ) -> None:
-    """Reject /seed requests without the admin token, when SEED_TOKEN is configured."""
+    """Reject /seed requests from anyone but the admin, when SEED_TOKEN is configured.
+
+    The admin is a request with "Authorization: Bearer <SEED_TOKEN>", or one from
+    the signed-in admin page: a valid session cookie, sent from this site.
+    """
     expected = settings.seed_token
     if not expected:
         return  # no token configured: /seed stays open (local development)
     provided = credentials.credentials if credentials else ""
-    if not hmac.compare_digest(provided.encode(), expected.encode()):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid admin token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    if _is_seed_token(provided, expected):
+        return
+    if _origin_is_this_site(request) and _has_admin_session(request, expected):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Missing or invalid admin token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def warn_if_seed_unprotected() -> None:
@@ -117,23 +176,74 @@ async def chat_interface():
 
 
 @app.get("/admin", include_in_schema=False)
-async def admin_interface():
-    """Serve the knowledge base admin page.
+async def admin_interface(request: Request):
+    """Serve the knowledge base admin page to the signed-in admin.
 
-    The HTML is public (browsers send no bearer token when navigating); the page
-    checks the admin token with /admin/verify before showing the editor.
+    Without a valid admin session (when SEED_TOKEN is configured) this answers 303
+    to the sign-in page /admin/login. Neither answer is cached.
     """
-    return FileResponse("static/admin.html")
+    if admin_signed_in(request):
+        return FileResponse("static/admin.html", headers=_NO_STORE)
+    return RedirectResponse("/admin/login", status_code=303, headers=_NO_STORE)
 
 
-@app.get("/admin/verify", include_in_schema=False, dependencies=[Depends(require_seed_token)])
-async def verify_admin_token():
-    """Check the admin token for the admin page, without side effects.
+@app.get("/admin/login", include_in_schema=False)
+async def admin_login_page(request: Request):
+    """Serve the admin sign-in page, or send a signed-in admin on to /admin.
 
-    200 when the request carries SEED_TOKEN, or when no token is configured;
-    otherwise require_seed_token answers 401.
+    With no token configured there is nothing to sign in to, so this also answers
+    303 to /admin. Neither answer is cached.
     """
-    return {"ok": True}
+    if admin_signed_in(request):
+        return RedirectResponse("/admin", status_code=303, headers=_NO_STORE)
+    return FileResponse("static/admin-login.html", headers=_NO_STORE)
+
+
+@app.post("/admin/login", include_in_schema=False)
+async def admin_sign_in(request: Request):
+    """Start an admin session for the body {"token": "<SEED_TOKEN>"}.
+
+    204 with the session cookie on the right token; 401 on anything else, with no
+    cookie. The body is read by hand, so a bad body is a 401 and never echoed back
+    (a pydantic body would answer 422 with the input). With no token configured,
+    answers 204 without a cookie: the admin page is open anyway.
+    """
+    expected = settings.seed_token
+    if not expected:
+        return Response(status_code=204)
+    try:
+        body = await request.json()
+    except ValueError:  # not JSON, or not UTF-8
+        body = None
+    provided = body.get("token") if isinstance(body, dict) else None
+    if not isinstance(provided, str) or not _is_seed_token(provided, expected):
+        logger.warning("Admin sign-in failed")  # never the body or the token
+        return JSONResponse(status_code=401, content={"detail": "Admin token rejected"})
+    response = Response(status_code=204)
+    response.set_cookie(
+        admin_session.COOKIE_NAME,
+        admin_session.issue(expected, time.time()),
+        max_age=admin_session.SESSION_SECONDS,
+        path="/",
+        secure=settings.environment == "production",
+        httponly=True,
+        samesite="strict",
+    )
+    return response
+
+
+@app.post("/admin/logout", include_in_schema=False)
+async def admin_sign_out():
+    """End the admin session in this browser by deleting its cookie (204 either way)."""
+    response = Response(status_code=204)
+    response.delete_cookie(
+        admin_session.COOKIE_NAME,
+        path="/",
+        secure=settings.environment == "production",
+        httponly=True,
+        samesite="strict",
+    )
+    return response
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -208,7 +318,7 @@ async def get_documents():
     "/seed",
     response_model=SeedResponse,
     tags=["RAG"],
-    dependencies=[Depends(require_seed_token)],
+    dependencies=[Depends(require_seed_access)],
 )
 async def seed_documents(request: SeedRequest = SeedRequest()):
     """
@@ -216,7 +326,8 @@ async def seed_documents(request: SeedRequest = SeedRequest()):
 
     If no documents are provided, seeds with default policy/FAQ documents.
     Documents are chunked, embedded, and stored in the vector database.
-    When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>".
+    When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>", or the
+    signed-in admin session sent from this site (the admin page).
     """
     try:
         logger.info("Starting document seeding process")
