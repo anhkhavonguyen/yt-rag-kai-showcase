@@ -61,6 +61,7 @@ def test_answer_query_without_search_results_says_it_lacks_information(rag, fake
     assert "don't have enough information" in answer["text"]
     assert answer["citations"] == []
     assert answer["debug"]["top_doc_ids"] == []
+    assert answer["debug"]["answer_mode"] == "no_results"
     assert fake_chat.calls == []  # the language model is not called
 
 
@@ -74,12 +75,45 @@ def test_answer_query_returns_answer_with_citations_from_context(rag, fake_db, f
     assert answer["citations"] == ["returns#1"]
     assert answer["debug"]["top_doc_ids"] == ["returns#1", "shipping#1"]
     assert isinstance(answer["debug"]["latency_ms"], int)
+    assert answer["debug"]["answer_mode"] == "generated"
 
     # The requested top_k reaches the search, and the model sees the deduplicated context.
     assert fake_db.search_calls[0][1] == 3
     query, context_blocks = fake_chat.calls[0]
     assert query == "What is the return policy?"
     assert [c["chunk_id"] for c in context_blocks] == ["returns#1", "shipping#1"]
+
+
+def test_answer_query_returns_passages_when_model_unavailable(rag, fake_db, fake_chat):
+    fake_db.search_results = [
+        result("returns#1", "Items can be returned within 30 days."),
+        result("returns#2", "Refunds take 5 days."),
+        result("shipping#1", "Orders ship in 2 business days."),
+    ]
+    fake_chat.unavailable = True
+
+    answer = asyncio.run(rag.answer_query("What is the return policy?"))
+
+    assert answer["debug"]["answer_mode"] == "extractive"
+    assert answer["citations"] == ["returns#1", "shipping#1"]
+    assert answer["debug"]["top_doc_ids"] == ["returns#1", "shipping#1"]
+    assert answer["text"] == (
+        "A generated answer isn't available right now. Here are the most relevant passages:\n\n"
+        "[returns#1] Items can be returned within 30 days.\n\n"
+        "[shipping#1] Orders ship in 2 business days."
+    )
+
+
+def test_answer_query_reports_error_without_provider_text_when_embedding_fails(rag, fake_embedding, fake_chat):
+    fake_embedding.error = RuntimeError("429 quota exceeded for key AIza-SECRET-123")
+
+    answer = asyncio.run(rag.answer_query("What is the return policy?"))
+
+    assert answer["debug"]["answer_mode"] == "error"
+    assert answer["text"] == "I couldn't search the knowledge base right now. Please try again shortly."
+    assert answer["citations"] == []
+    assert "AIza-SECRET-123" not in str(answer)
+    assert fake_chat.calls == []
 
 
 # --- seeding ----------------------------------------------------------------

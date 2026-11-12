@@ -77,11 +77,20 @@ class RAGChatbot:
         """
         Seed the backend with default documents.
         
+        Sends "Authorization: Bearer $SEED_TOKEN" when the SEED_TOKEN environment
+        variable is set (required by deployments that configure an admin token).
+
         Returns:
             Dict[str, Any]: Response from the seed endpoint
         """
+        headers = {}
+        seed_token = os.environ.get("SEED_TOKEN")
+        if seed_token:
+            headers["Authorization"] = f"Bearer {seed_token}"
         try:
-            response = self.session.post(f"{self.base_url}/seed", timeout=30)
+            response = self.session.post(f"{self.base_url}/seed", headers=headers, timeout=30)
+            if response.status_code == 401:
+                return {"error": "Admin token missing or rejected. Set SEED_TOKEN to this deployment's admin token."}
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:

@@ -1,6 +1,9 @@
 # RAG AI Agent Backend
 
 [![CI](https://github.com/anhkhavonguyen/yt-rag-kai-showcase/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/anhkhavonguyen/yt-rag-kai-showcase/actions/workflows/ci.yml)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/anhkhavonguyen/yt-rag-kai-showcase)
+
+Run it for free: Render + Google Gemini + Supabase, no payment method needed. See the [free deployment guide](DEPLOYMENT.md).
 
 A minimal, production-ready FastAPI backend demonstrating **Retrieval-Augmented Generation (RAG)** with vector similarity search. Built for educational purposes and easy frontend integration.
 
@@ -202,7 +205,19 @@ curl -X POST http://localhost:8000/answer \
 
 ### AI Providers
 
-**OpenAI (Recommended)**
+Chat and embeddings go through an OpenAI-compatible API. `OPENAI_BASE_URL` points it at any compatible provider (unset means api.openai.com), and `OPENAI_API_KEY` holds that provider's key.
+
+**Google Gemini (free tier, no billing)**
+```env
+AI_PROVIDER=openai
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+OPENAI_API_KEY=your_gemini_api_key        # from Google AI Studio
+OPENAI_CHAT_MODEL=gemini-3.5-flash
+OPENAI_EMBED_MODEL=gemini-embedding-2
+EMBEDDING_DIMENSIONS=1536                 # vectors are shortened to match VECTOR(1536)
+```
+
+**OpenAI**
 ```env
 AI_PROVIDER=openai
 OPENAI_API_KEY=your_key
@@ -237,6 +252,8 @@ docker build -t yt-rag .
 # Run container
 docker run -p 8080:8080 --env-file .env yt-rag
 ```
+
+To host this image for free, see the [free deployment guide](DEPLOYMENT.md) (Render web service defined in [`render.yaml`](render.yaml)).
 
 ## 🔮 NextJS Frontend Integration
 

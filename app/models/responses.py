@@ -5,7 +5,7 @@
 Response models for the RAG API endpoints.
 """
 
-from typing import List
+from typing import List, Literal
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +18,14 @@ class DebugInfo(BaseModel):
     """Debug information for RAG responses."""
     top_doc_ids: List[str] = Field(..., description="IDs of retrieved chunks")
     latency_ms: int = Field(..., description="Total processing time in milliseconds")
+    answer_mode: Literal["generated", "extractive", "no_results", "error"] = Field(
+        ...,
+        description=(
+            "generated: the language model answered; extractive: the model was unavailable, "
+            "so retrieved passages are returned; no_results: nothing was retrieved; "
+            "error: answering failed before the model was called"
+        ),
+    )
 
 
 class AnswerResponse(BaseModel):

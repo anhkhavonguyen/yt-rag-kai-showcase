@@ -12,11 +12,18 @@ import re
 from typing import List, Dict, Any
 from ..core.database import db
 from .embedding import embedding_service
-from .chat import chat_service
+from .chat import ChatUnavailableError, chat_service
 from .chunker import chunker
 from ..data.default_documents import DEFAULT_DOCUMENTS
 
 logger = logging.getLogger(__name__)
+
+NO_RESULTS_TEXT = (
+    "I don't have enough information to answer your question. "
+    "Could you please rephrase or provide more context?"
+)
+EXTRACTIVE_LEAD = "A generated answer isn't available right now. Here are the most relevant passages:"
+RETRIEVAL_ERROR_TEXT = "I couldn't search the knowledge base right now. Please try again shortly."
 
 
 class RAGService:
@@ -80,60 +87,59 @@ class RAGService:
             top_k: Number of chunks to retrieve
             
         Returns:
-            Dictionary with answer, citations, and debug info
+            Dictionary with answer, citations, and debug info. debug.answer_mode
+            is "generated", "extractive" (model unavailable, passages returned),
+            "no_results" or "error" (failed before the model was called).
         """
         start_time = time.time()
-        
+
+        def result(text: str, citations: List[str], top_doc_ids: List[str], answer_mode: str) -> Dict[str, Any]:
+            return {
+                'text': text,
+                'citations': citations,
+                'debug': {
+                    'top_doc_ids': top_doc_ids,
+                    'latency_ms': int((time.time() - start_time) * 1000),
+                    'answer_mode': answer_mode,
+                },
+            }
+
         try:
             # Step 1: Generate query embedding
             query_embedding = await self.embedding_service.embed_query(query)
-            
+
             # Step 2: Vector similarity search
             search_results = await self.db.vector_search(query_embedding, top_k)
-            
+
             if not search_results:
-                return {
-                    'text': "I don't have enough information to answer your question. Could you please rephrase or provide more context?",
-                    'citations': [],
-                    'debug': {
-                        'top_doc_ids': [],
-                        'latency_ms': int((time.time() - start_time) * 1000)
-                    }
-                }
-            
+                return result(NO_RESULTS_TEXT, [], [], 'no_results')
+
             # Step 3: Deduplicate and prepare context
             context_blocks = self._prepare_context(search_results)
-            
-            # Step 4: Generate answer
-            answer_text = await self.chat_service.generate_answer(query, context_blocks)
-            
-            # Step 5: Extract citations from answer
-            citations = self._extract_citations(answer_text, context_blocks)
-            
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            
-            result = {
-                'text': answer_text,
-                'citations': citations,
-                'debug': {
-                    'top_doc_ids': [block['chunk_id'] for block in context_blocks],
-                    'latency_ms': elapsed_ms
-                }
-            }
-            
-            logger.info(f"Query processed in {elapsed_ms}ms with {len(citations)} citations")
-            return result
-            
+            context_ids = [block['chunk_id'] for block in context_blocks]
+
         except Exception as e:
-            logger.error(f"Query processing failed: {e}")
-            return {
-                'text': f"I encountered an error while processing your question: {str(e)}",
-                'citations': [],
-                'debug': {
-                    'top_doc_ids': [],
-                    'latency_ms': int((time.time() - start_time) * 1000)
-                }
-            }
+            # No provider text in the response; the type goes to the server log.
+            logger.error(f"Query processing failed before answering: {type(e).__name__}")
+            return result(RETRIEVAL_ERROR_TEXT, [], [], 'error')
+
+        # Step 4: Generate answer, or fall back to the retrieved passages
+        try:
+            answer_text = await self.chat_service.generate_answer(query, context_blocks)
+        except ChatUnavailableError:
+            logger.warning("Chat model unavailable; returning retrieved passages instead")
+            return result(self._extractive_answer(context_blocks), context_ids, context_ids, 'extractive')
+
+        # Step 5: Extract citations from answer
+        citations = self._extract_citations(answer_text, context_blocks)
+        response = result(answer_text, citations, context_ids, 'generated')
+        logger.info(f"Query processed in {response['debug']['latency_ms']}ms with {len(citations)} citations")
+        return response
+
+    def _extractive_answer(self, context_blocks: List[Dict[str, Any]]) -> str:
+        """Answer text built from the retrieved passages, one per paragraph."""
+        passages = [f"[{block['chunk_id']}] {block.get('text', '')}" for block in context_blocks]
+        return "\n\n".join([EXTRACTIVE_LEAD, *passages])
     
     def _prepare_context(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

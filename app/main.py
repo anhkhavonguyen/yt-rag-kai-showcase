@@ -6,10 +6,13 @@ FastAPI application for RAG (Retrieval-Augmented Generation) backend.
 Provides endpoints for document seeding and question answering with citations.
 """
 
+import hmac
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, JSONResponse
 
@@ -29,13 +32,38 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+_seed_bearer = HTTPBearer(auto_error=False)
+
+
+async def require_seed_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_seed_bearer),
+) -> None:
+    """Reject /seed requests without the admin token, when SEED_TOKEN is configured."""
+    expected = settings.seed_token
+    if not expected:
+        return  # no token configured: /seed stays open (local development)
+    provided = credentials.credentials if credentials else ""
+    if not hmac.compare_digest(provided.encode(), expected.encode()):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid admin token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def warn_if_seed_unprotected() -> None:
+    """Log a warning when a production deployment leaves /seed open."""
+    if settings.environment == "production" and not settings.seed_token:
+        logger.warning("SEED_TOKEN is not set: anyone can overwrite the knowledge base via POST /seed")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting RAG API application")
-    
+    warn_if_seed_unprotected()
+
     try:
         # Initialize database connection
         await db.connect()
@@ -156,13 +184,19 @@ async def get_documents():
     return {"documents": DEFAULT_DOCUMENTS}
 
 
-@app.post("/seed", response_model=SeedResponse, tags=["RAG"])
+@app.post(
+    "/seed",
+    response_model=SeedResponse,
+    tags=["RAG"],
+    dependencies=[Depends(require_seed_token)],
+)
 async def seed_documents(request: SeedRequest = SeedRequest()):
     """
     Seed the knowledge base with documents.
-    
+
     If no documents are provided, seeds with default policy/FAQ documents.
     Documents are chunked, embedded, and stored in the vector database.
+    When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>".
     """
     try:
         logger.info("Starting document seeding process")
@@ -220,7 +254,8 @@ async def answer_question(request: AnswerRequest):
             citations=result['citations'],
             debug={
                 'top_doc_ids': result['debug']['top_doc_ids'],
-                'latency_ms': result['debug']['latency_ms']
+                'latency_ms': result['debug']['latency_ms'],
+                'answer_mode': result['debug']['answer_mode'],
             }
         )
         

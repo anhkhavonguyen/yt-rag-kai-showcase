@@ -721,25 +721,62 @@
             document.getElementById('settingsTab').style.display = tabName === 'settings' ? 'block' : 'none';
         }
 
+        // Admin token for POST /seed (deployments that set SEED_TOKEN). Kept in
+        // sessionStorage, i.e. only for this browser tab; storage can be blocked,
+        // so every access is guarded.
+        const SEED_TOKEN_KEY = 'ytRagSeedToken';
+
+        function getSeedToken() {
+            try { return sessionStorage.getItem(SEED_TOKEN_KEY) || ''; } catch (e) { return ''; }
+        }
+
+        function setSeedToken(token) {
+            try {
+                if (token) { sessionStorage.setItem(SEED_TOKEN_KEY, token); }
+                else { sessionStorage.removeItem(SEED_TOKEN_KEY); }
+            } catch (e) { /* storage unavailable: token is just not remembered */ }
+        }
+
+        function postSeed(token) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) { headers['Authorization'] = `Bearer ${token}`; }
+            return fetch(`${API_BASE_URL}/seed`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ docs: documents })
+            });
+        }
+
         async function saveDocuments() {
             const saveText = document.getElementById('saveText');
             const originalText = saveText.innerHTML;
-            
+
             saveBtn.disabled = true;
             saveBtn.classList.add('loading');
             saveBtn.classList.remove('success', 'error');
             saveText.innerHTML = '🔄 Saving...';
 
             try {
-                const response = await fetch(`${API_BASE_URL}/seed`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        docs: documents
-                    })
-                });
+                let token = getSeedToken();
+                let response = await postSeed(token);
+
+                if (response.status === 401) {
+                    if (!token) {
+                        // First refusal: ask for the token and retry once.
+                        const entered = window.prompt('Saving documents on this deployment needs the admin token (SEED_TOKEN):');
+                        if (!entered || !entered.trim()) {
+                            throw new Error('Admin token required');
+                        }
+                        token = entered.trim();
+                        setSeedToken(token);
+                        response = await postSeed(token);
+                    }
+                    if (response.status === 401) {
+                        // Wrong (or rotated) token: forget it so the next save asks again.
+                        setSeedToken('');
+                        throw new Error('Admin token rejected');
+                    }
+                }
 
                 if (response.ok) {
                     const data = await response.json();
@@ -756,7 +793,11 @@
                     throw new Error('Failed to save documents');
                 }
             } catch (error) {
-                showNotification('❌ Failed to update database. Please try again.', 'error');
+                const tokenProblem = error.message === 'Admin token rejected' || error.message === 'Admin token required';
+                showNotification(
+                    tokenProblem ? `❌ ${error.message}.` : '❌ Failed to update database. Please try again.',
+                    'error'
+                );
                 saveBtn.classList.remove('loading');
                 saveBtn.classList.add('error');
                 saveText.innerHTML = '❌ Failed';
