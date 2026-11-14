@@ -639,7 +639,7 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    showNotification(`✅ Successfully updated ${data.inserted} documents in database!`, 'success');
+                    showNotification(`✅ Saved ${data.inserted} chunks, removed ${data.removed} old ones`, 'success');
                     saveBtn.classList.remove('loading');
                     saveBtn.classList.add('success');
                     saveText.innerHTML = '✅ Saved!';

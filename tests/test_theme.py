@@ -3,12 +3,14 @@
 Checks what can be read from the served files: the shared stylesheet and its color
 tokens, WCAG contrast between them, that every page uses the stylesheet and defines
 no colors of its own, the dark color scheme, a keyboard focus style, no external
-resources, and that the Customer Support page keeps its content. How the pages look
-at phone width and with the keyboard is checked by hand in a browser.
+resources, and the chat page's content (spec profile-assistant of the change
+profile-assistant-about-kai): the profile panel, sample questions and how answers are
+rendered. How the pages look at phone width and with the keyboard is checked by hand in
+a browser.
 
 static/theme.css must define these tokens in :root as #rrggbb values:
     --bg --surface --surface-raised --text --text-muted --accent --on-accent
-    --border --danger --success --focus
+    --border --danger --success --focus --tag-bg --chip-bg
 """
 
 import re
@@ -17,9 +19,10 @@ from html.parser import HTMLParser
 import pytest
 
 import app.main
+from app.data.default_documents import DEFAULT_DOCUMENTS
 
 TOKENS = ["bg", "surface", "surface-raised", "text", "text-muted", "accent", "on-accent",
-          "border", "danger", "success", "focus"]
+          "border", "danger", "success", "focus", "tag-bg", "chip-bg"]
 
 # (foreground, background, minimum ratio): WCAG AA, 4.5:1 for text and 3:1 for controls and focus.
 CONTRAST_PAIRS = [
@@ -29,6 +32,10 @@ CONTRAST_PAIRS = [
     ("success", "bg", 4.5), ("success", "surface", 4.5),
     ("on-accent", "accent", 4.5),
     ("accent", "bg", 3.0), ("focus", "bg", 3.0), ("focus", "surface", 3.0),
+    # The chat page's profile panel, sample questions and answer sources
+    ("text", "tag-bg", 4.5), ("accent", "chip-bg", 4.5),
+    ("accent", "surface", 4.5), ("accent", "surface-raised", 4.5),
+    ("focus", "surface-raised", 3.0), ("focus", "chip-bg", 3.0),
 ]
 
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\b")
@@ -194,21 +201,222 @@ def test_page_loads_nothing_from_other_sites(pages, path):
         assert "@import" not in css
 
 
-# --- The Customer Support page keeps its content -----------------------------------------------
+# --- The chat page: Meet Kai -------------------------------------------------------------------
 
 
-def test_customer_support_page_keeps_its_content(pages):
+class Elements(HTMLParser):
+    """A page's links, buttons, visible text (without <style> and <script>) and script source."""
+
+    def __init__(self, html: str):
+        super().__init__()
+        self.links: list[dict] = []
+        self.buttons: list[dict] = []
+        self.visible: list[str] = []
+        self.script = ""
+        self._skip = None  # "style" or "script" while inside one
+        self._open: list[dict] = []  # links and buttons whose text is being collected
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("style", "script"):
+            self._skip = tag
+        elif tag in ("a", "button"):
+            element = {**dict(attrs), "text": ""}
+            (self.links if tag == "a" else self.buttons).append(element)
+            self._open.append(element)
+
+    def handle_endtag(self, tag):
+        if tag == self._skip:
+            self._skip = None
+        elif tag in ("a", "button") and self._open:
+            self._open.pop()
+
+    def handle_data(self, data):
+        if self._skip == "script":
+            self.script += data
+        elif self._skip is None:
+            self.visible.append(data)
+            for element in self._open:
+                element["text"] += data
+
+
+CERTIFICATIONS = [
+    "Claude Code in Action",
+    "AWS Educate Machine Learning Foundations",
+    "Oracle Cloud Infrastructure 2025 Certified AI Foundations Associate",
+    "Microsoft Certified Professional",
+]
+SAMPLE_QUESTIONS = [
+    "Who is Kai?",
+    "What can Kai do?",
+    "What is Kai working on now?",
+    "What AI experience does Kai have?",
+    "Which certifications does Kai have?",
+]
+LINKEDIN = "https://www.linkedin.com/in/khavo2907/"
+
+
+@pytest.fixture
+def chat(pages) -> Elements:
+    return Elements(pages["/chat"])
+
+
+def visible_text(page: Elements) -> str:
+    return " ".join(" ".join(page.visible).split())
+
+
+def profile_panel(html: str) -> Elements:
+    return Elements(html[html.index("<aside"):html.index("</aside>")])
+
+
+def test_chat_page_keeps_its_content(pages, chat):
     html = pages["/chat"]
 
-    assert "<title>Customer Support</title>" in html
-    assert re.search(r"<h1[^>]*>\s*Customer Support\s*</h1>", html)
-    assert "Chat with our AI assistant for help with orders, returns, and policies" in html
-    assert "Welcome to the AI Assistant!" in html
+    assert "<title>Meet Kai</title>" in html
+    assert re.search(r"<h1[^>]*>\s*Meet Kai\s*</h1>", html)
+    assert "Ask about Kha Vo's experience, skills and work" in visible_text(chat)
     assert 'id="status"' in html
     assert re.search(r"<input[^>]*id=\"messageInput\"", html)
+    assert 'placeholder="Ask a question about Kai..."' in html
     assert re.search(r"<button[^>]*>\s*Send\s*</button>", html)
     assert "/answer" in html and "/healthz" in html
 
 
-def test_customer_support_page_has_no_admin_entry(pages):
+def test_chat_page_has_no_admin_entry(pages):
     assert "/admin" not in pages["/chat"]
+
+
+def test_chat_page_shows_no_store_wording(chat):
+    text = visible_text(chat).lower()
+
+    for wording in ("customer support", "returns", "shipping", "sizing", "policies"):
+        assert wording not in text, f"/chat shows {wording!r}"
+
+
+# Profile panel (spec: the chat page shows Kai's profile, skills and certifications)
+
+
+def test_profile_panel_shows_kai_skills_and_certifications(pages):
+    panel = profile_panel(pages["/chat"])
+    text = visible_text(panel)
+
+    for expected in ("Kha Vo", "Known as Kai", "Team Lead | Enterprise Software & AI Solutions",
+                     "Ho Chi Minh City, Vietnam", "12+ years", "Orient Software",
+                     "Enterprise & cloud", "AI", "Programming in C#", *CERTIFICATIONS):
+        assert expected in text, f"profile panel lacks {expected!r}"
+    assert LINKEDIN in [link.get("href") for link in panel.links]
+
+
+def test_certifications_link_to_their_public_verification_pages(pages):
+    verify_links = {
+        link.get("href") for link in profile_panel(pages["/chat"]).links if "Verify" in link["text"]
+    }
+
+    assert verify_links == {
+        "https://verify.skilljar.com/c/8ef23mi7ch5g",  # Claude Code in Action, Anthropic
+        "https://www.credly.com/badges/666fe70b-04f6-4311-a8e3-d2583b76df77",  # AWS Educate ML Foundations
+    }
+
+
+def test_every_certification_on_the_page_is_in_the_education_document(pages):
+    education = next(d["text"] for d in DEFAULT_DOCUMENTS if d["chunk_id"] == "kai_education_certifications_v1")
+    names = re.findall(r'<div class="cert-name">([^<]+)</div>', pages["/chat"])
+
+    assert names == CERTIFICATIONS
+    for name in names:
+        assert name in education, f"{name!r} is on the page but not in kai_education_certifications_v1"
+
+
+def test_links_to_other_sites_open_in_a_new_tab_without_access_to_the_page(chat):
+    external = [link for link in chat.links if re.match(r"https?://", link.get("href") or "")]
+
+    assert external, "expected at least the LinkedIn link"
+    for link in external:
+        assert link.get("target") == "_blank", link
+        assert {"noopener", "noreferrer"} <= set((link.get("rel") or "").split()), link
+        assert "(opens in a new tab)" in link["text"], link
+
+
+def test_no_github_and_no_empty_or_placeholder_links(chat):
+    for link in chat.links:
+        href = (link.get("href") or "").strip()
+        assert href not in ("", "#"), link
+        assert "github.com" not in href, link
+
+
+def test_show_more_button_reports_its_state(chat, pages):
+    toggle = next(b for b in chat.buttons if b.get("id") == "profileMoreToggle")
+
+    assert toggle["text"].strip() == "Show more"
+    assert toggle.get("type") == "button"
+    assert toggle.get("aria-controls") == "profile-more"
+    assert toggle.get("aria-expanded") == "false"
+    assert 'id="profile-more"' in pages["/chat"]
+    assert "setAttribute('aria-expanded'" in chat.script and "Show less" in chat.script
+
+
+def test_layout_switches_to_two_columns_from_900px(pages):
+    assert re.search(r"@media\s*\(\s*min-width:\s*900px\s*\)", pages["/chat"])
+
+
+# Sample questions (spec: sample questions are asked with one click)
+
+
+def test_welcome_message_offers_the_sample_questions_as_buttons(chat):
+    samples = [b for b in chat.buttons if "sample-question" in (b.get("class") or "").split()]
+
+    assert [b["text"].strip() for b in samples] == SAMPLE_QUESTIONS
+    assert all(b.get("type") == "button" for b in samples)
+    assert "I answer questions about Kha Vo, known as Kai, using Kai's LinkedIn profile" in visible_text(chat)
+
+
+def test_sample_questions_are_disabled_while_an_answer_is_pending(chat):
+    waiting = re.search(r"function setWaiting\(waiting\)\s*\{(.*?)\n        \}", chat.script, re.S)
+
+    assert waiting, "setWaiting() not found"
+    assert "sendBtn.disabled = waiting" in waiting.group(1)
+    assert "'.sample-question'" in waiting.group(1) and "button.disabled = waiting" in waiting.group(1)
+
+
+def test_send_returns_early_while_an_answer_is_pending(chat):
+    body = chat.script[chat.script.index("async function sendMessage()"):]
+
+    assert re.match(r"async function sendMessage\(\)\s*\{\s*if \(pending\) return;", body)
+
+
+# Answers (spec: each answer shows its sources and how it was made; plain text)
+
+
+def test_answers_are_rendered_as_plain_text(chat):
+    assert "innerHTML" not in chat.script
+    assert "insertAdjacentHTML" not in chat.script
+    assert "textContent" in chat.script
+
+
+def test_answers_show_numbered_sources_and_how_they_were_made(chat):
+    script = chat.script
+
+    assert "createElement('details')" in script and "createElement('summary')" in script
+    assert "data.sources" in script
+    assert "answer_mode" in script and "latency_ms" in script
+    assert "'AI answer'" in script
+    assert "'Passages only (AI unavailable)'" in script
+
+
+# --- The admin page reports what a save changed -----------------------------------------------
+
+
+def test_admin_save_message_reports_inserted_and_removed(pages):
+    html = pages["/admin"]
+
+    assert "✅ Saved ${data.inserted} chunks, removed ${data.removed} old ones" in html
+
+
+# --- The sign-in page links back to the chat page ---------------------------------------------
+
+
+def test_sign_in_page_links_back_to_chat(pages):
+    links = Elements(pages["/admin/login"]).links
+
+    assert any(link.get("href") == "/chat" and "Back to chat" in link["text"] for link in links)
+    assert "Customer Support" not in pages["/admin/login"]

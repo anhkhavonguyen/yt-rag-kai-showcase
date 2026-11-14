@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark">
-    <title>Customer Support</title>
+    <title>Meet Kai</title>
     <link rel="stylesheet" href="/static/theme.css">
     <style>
         * {
@@ -21,10 +21,19 @@
             padding: 20px;
         }
 
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+        }
+
+        /* Layout: one column (profile card above the chat), two columns from 900px */
         .app-container {
             width: 100%;
-            max-width: 900px;
-            height: 90vh;
+            max-width: 1200px;
             background: var(--surface);
             border-radius: 24px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
@@ -32,7 +41,133 @@
             display: grid;
             grid-template-columns: minmax(0, 1fr);
             overflow: hidden;
-            backdrop-filter: blur(10px);
+        }
+
+        /* Profile panel */
+        .profile-panel {
+            padding: 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            overflow-wrap: anywhere;
+        }
+
+        .profile-card {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            column-gap: 14px;
+            align-items: center;
+        }
+
+        .profile-avatar {
+            grid-row: span 2;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: var(--on-accent);
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .profile-name {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .profile-nickname {
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+
+        .profile-headline {
+            grid-column: 1 / -1;
+            margin-top: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .profile-link {
+            grid-column: 1 / -1;
+            justify-self: start;
+            margin-top: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .profile-more-toggle {
+            margin-top: 14px;
+        }
+
+        #profile-more {
+            display: none;
+            margin-top: 16px;
+        }
+
+        .profile-panel.expanded #profile-more {
+            display: block;
+        }
+
+        .profile-facts {
+            list-style: none;
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text-muted);
+        }
+
+        .profile-section h2 {
+            margin: 20px 0 8px;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .profile-section h3 {
+            margin: 12px 0 6px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .tags {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .tags li {
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--tag-bg);
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        .certifications {
+            list-style: none;
+            display: grid;
+            gap: 10px;
+        }
+
+        .cert-name {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .cert-detail {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .cert-verify {
+            display: inline-block;
+            margin-top: 2px;
+            font-size: 13px;
+            font-weight: 600;
         }
 
         /* Chat Section */
@@ -40,7 +175,7 @@
             display: flex;
             flex-direction: column;
             min-height: 0; /* Important for flex scrolling */
-            height: 100%; /* Ensure full height */
+            height: 80vh; /* phone: the chat keeps its own height, the page scrolls */
         }
 
         .chat-header {
@@ -117,6 +252,11 @@
             position: relative;
         }
 
+        /* Questions and answers are plain text; keep their line breaks */
+        .message-text {
+            white-space: pre-wrap;
+        }
+
         .message.bot .message-content {
             background: var(--surface-raised);
             color: var(--text);
@@ -156,14 +296,73 @@
             border: 2px solid var(--border);
         }
 
-        .citations {
-            font-size: 12px;
-            margin-top: 10px;
-            font-style: italic;
-            padding: 8px 12px;
-            background: var(--surface);
+        /* Sample questions */
+        .sample-questions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .sample-question {
+            padding: 6px 12px;
+            border: 1px solid var(--accent);
+            border-radius: 999px;
+            background: var(--chip-bg);
+            color: var(--accent);
+            font-size: 14px;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .sample-question:hover {
+            filter: brightness(1.15);
+        }
+
+        .sample-question:disabled {
+            border-color: var(--border);
             color: var(--text-muted);
-            border-radius: 10px;
+            cursor: not-allowed;
+            filter: none;
+        }
+
+        /* Answer details: numbered sources and how the answer was made */
+        .answer-sources {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }
+
+        .answer-sources-label {
+            margin-bottom: 4px;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .answer-sources details {
+            margin: 4px 0;
+        }
+
+        .answer-sources summary {
+            cursor: pointer;
+            font-size: 14px;
+            color: var(--accent);
+        }
+
+        .answer-sources details p {
+            margin: 6px 0 8px 16px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text-muted);
+            white-space: pre-wrap;
+        }
+
+        .answer-meta {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--text-muted);
         }
 
         .chat-input {
@@ -268,6 +467,32 @@
             30% { transform: translateY(-10px); }
         }
 
+        /* Desktop: the profile panel sits beside the chat, fully shown */
+        @media (min-width: 900px) {
+            .app-container {
+                height: 90vh;
+                grid-template-columns: 320px minmax(0, 1fr);
+            }
+
+            .profile-panel {
+                border-bottom: none;
+                border-right: 1px solid var(--border);
+                overflow-y: auto;
+            }
+
+            .profile-more-toggle {
+                display: none;
+            }
+
+            #profile-more {
+                display: block;
+            }
+
+            .chat-section {
+                height: 100%;
+            }
+        }
+
         @media (max-width: 768px) {
             body {
                 padding: 10px;
@@ -275,26 +500,96 @@
 
             .app-container {
                 border-radius: 10px;
-                height: 95vh;
             }
 
             .message-content {
                 max-width: 85%;
-            }
-
-            .chat-header h1 {
-                font-size: 20px;
             }
         }
     </style>
 </head>
 <body>
     <div class="app-container">
+        <!-- Profile panel -->
+        <aside class="profile-panel" id="profile-panel" aria-label="About Kai">
+            <div class="profile-card">
+                <div class="profile-avatar" aria-hidden="true">KV</div>
+                <div class="profile-name">Kha Vo</div>
+                <div class="profile-nickname">Known as Kai</div>
+                <p class="profile-headline">Team Lead | Enterprise Software &amp; AI Solutions | Forward Deployed Engineering | .NET &amp; Azure</p>
+                <a class="profile-link" href="https://www.linkedin.com/in/khavo2907/" target="_blank" rel="noopener noreferrer">LinkedIn ↗<span class="visually-hidden"> (opens in a new tab)</span></a>
+            </div>
+
+            <button type="button" class="button-secondary profile-more-toggle" id="profileMoreToggle" aria-controls="profile-more" aria-expanded="false">Show more</button>
+
+            <div id="profile-more">
+                <ul class="profile-facts">
+                    <li>Ho Chi Minh City, Vietnam · 12+ years</li>
+                    <li>Team Lead, Orient Software · DEKRA Global Vehicle Inspection Booking</li>
+                </ul>
+
+                <section class="profile-section" aria-labelledby="skills-heading">
+                    <h2 id="skills-heading">Skills</h2>
+                    <h3>Enterprise &amp; cloud</h3>
+                    <ul class="tags">
+                        <li>C#</li>
+                        <li>.NET</li>
+                        <li>ASP.NET Core</li>
+                        <li>Angular</li>
+                        <li>TypeScript</li>
+                        <li>SQL Server</li>
+                        <li>REST APIs</li>
+                        <li>Microsoft Azure</li>
+                        <li>API Management</li>
+                        <li>Azure Cache for Redis</li>
+                        <li>Multi-tenant architecture</li>
+                        <li>Distributed systems</li>
+                    </ul>
+                    <h3>AI</h3>
+                    <ul class="tags">
+                        <li>LLMs</li>
+                        <li>RAG</li>
+                        <li>AI agents</li>
+                        <li>Tool calling</li>
+                        <li>Agentic development</li>
+                        <li>Claude Code</li>
+                        <li>GitHub Copilot</li>
+                    </ul>
+                </section>
+
+                <section class="profile-section" aria-labelledby="certifications-heading">
+                    <h2 id="certifications-heading">Certifications</h2>
+                    <!-- Add a "Verify ↗" link to an item once its public verification URL is known,
+                         with target="_blank" rel="noopener noreferrer", like the LinkedIn link. -->
+                    <ul class="certifications">
+                        <li>
+                            <div class="cert-name">Claude Code in Action</div>
+                            <div class="cert-detail">Anthropic · Mar 2026</div>
+                            <a class="cert-verify" href="https://verify.skilljar.com/c/8ef23mi7ch5g" target="_blank" rel="noopener noreferrer">Verify ↗<span class="visually-hidden"> Claude Code in Action (opens in a new tab)</span></a>
+                        </li>
+                        <li>
+                            <div class="cert-name">AWS Educate Machine Learning Foundations</div>
+                            <div class="cert-detail">Amazon Web Services · Jul 2025</div>
+                            <a class="cert-verify" href="https://www.credly.com/badges/666fe70b-04f6-4311-a8e3-d2583b76df77" target="_blank" rel="noopener noreferrer">Verify ↗<span class="visually-hidden"> AWS Educate Machine Learning Foundations (opens in a new tab)</span></a>
+                        </li>
+                        <li>
+                            <div class="cert-name">Oracle Cloud Infrastructure 2025 Certified AI Foundations Associate</div>
+                            <div class="cert-detail">Oracle · 2025</div>
+                        </li>
+                        <li>
+                            <div class="cert-name">Microsoft Certified Professional</div>
+                            <div class="cert-detail">Programming in C# · Microsoft</div>
+                        </li>
+                    </ul>
+                </section>
+            </div>
+        </aside>
+
         <!-- Chat Section -->
-        <div class="chat-section">
+        <main class="chat-section">
             <div class="chat-header">
-                <h1>Customer Support</h1>
-                <p>Chat with our AI assistant for help with orders, returns, and policies</p>
+                <h1>Meet Kai</h1>
+                <p>Ask about Kha Vo's experience, skills and work</p>
             </div>
 
             <div class="status" id="status">Checking connection...</div>
@@ -303,12 +598,14 @@
                 <div class="message bot">
                     <div class="message-avatar">✨</div>
                     <div class="message-content">
-                        Welcome to the AI Assistant! 👋
-                        <br><br>
-                        I can help you with:
-                        • Questions about policies and services
-                        • Return and shipping information
-                        • Customer support inquiries
+                        <p class="message-text">Hi! 👋 I answer questions about Kha Vo, known as Kai, using Kai's LinkedIn profile. Try asking:</p>
+                        <div class="sample-questions">
+                            <button type="button" class="sample-question">Who is Kai?</button>
+                            <button type="button" class="sample-question">What can Kai do?</button>
+                            <button type="button" class="sample-question">What is Kai working on now?</button>
+                            <button type="button" class="sample-question">What AI experience does Kai have?</button>
+                            <button type="button" class="sample-question">Which certifications does Kai have?</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -326,10 +623,10 @@
             </div>
 
             <div class="chat-input">
-                <input type="text" id="messageInput" aria-label="Your question" placeholder="Ask me anything about our policies..." maxlength="500">
+                <input type="text" id="messageInput" aria-label="Your question" placeholder="Ask a question about Kai..." maxlength="500">
                 <button onclick="sendMessage()" id="sendBtn">Send</button>
             </div>
-        </div>
+        </main>
     </div>
 
     <script>
@@ -340,13 +637,25 @@
         const sendBtn = document.getElementById('sendBtn');
         const typingIndicator = document.getElementById('typing');
         const statusDiv = document.getElementById('status');
+        const profilePanel = document.getElementById('profile-panel');
+        const profileMoreToggle = document.getElementById('profileMoreToggle');
+
+        // How each kind of answer is labelled under it; other modes get no label
+        const MODE_LABELS = {
+            generated: 'AI answer',
+            extractive: 'Passages only (AI unavailable)',
+        };
+
+        // True while a question is waiting for its answer: nothing else is sent meanwhile
+        let pending = false;
 
         // Initialize the application
         init();
 
         async function init() {
             await checkHealth();
-            messageInput.focus();
+            // Don't scroll: on a phone the profile card above the chat stays in view
+            messageInput.focus({ preventScroll: true });
         }
 
         // Send message on Enter key
@@ -355,6 +664,21 @@
                 e.preventDefault();
                 sendMessage();
             }
+        });
+
+        // Sample questions are asked exactly as if typed and sent
+        document.querySelectorAll('.sample-question').forEach(button => {
+            button.addEventListener('click', () => {
+                messageInput.value = button.textContent;
+                sendMessage();
+            });
+        });
+
+        // Phone: show or hide the skills and certifications
+        profileMoreToggle.addEventListener('click', () => {
+            const expanded = profilePanel.classList.toggle('expanded');
+            profileMoreToggle.setAttribute('aria-expanded', String(expanded));
+            profileMoreToggle.textContent = expanded ? 'Show less' : 'Show more';
         });
 
         async function checkHealth() {
@@ -378,7 +702,9 @@
             }
         }
 
-        function addMessage(content, isUser = false, citations = []) {
+        // Every node is built with textContent: questions, answers, titles and
+        // passages are shown as plain text, never parsed as HTML.
+        function addMessage(text, isUser = false, sources = [], debug = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
 
@@ -388,13 +714,17 @@
 
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
-            contentDiv.innerHTML = content.replace(/\n/g, '<br>');
 
-            if (citations.length > 0) {
-                const citationsDiv = document.createElement('div');
-                citationsDiv.className = 'citations';
-                citationsDiv.innerHTML = `📚 Sources: ${citations.join(', ')}`;
-                contentDiv.appendChild(citationsDiv);
+            const textElement = document.createElement('p');
+            textElement.className = 'message-text';
+            textElement.textContent = isUser ? text : numberCitations(text, sources);
+            contentDiv.appendChild(textElement);
+
+            if (!isUser && sources.length > 0) {
+                contentDiv.appendChild(renderSources(sources));
+            }
+            if (!isUser && debug && MODE_LABELS[debug.answer_mode]) {
+                contentDiv.appendChild(renderAnswerMeta(debug));
             }
 
             if (isUser) {
@@ -409,6 +739,49 @@
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
+        // [chunk_id] markers become [1], [2]… matching the numbered sources;
+        // markers that match no source are left as written.
+        function numberCitations(text, sources) {
+            const numbers = new Map(sources.map((source, i) => [source.chunk_id, i + 1]));
+            return text.replace(/\[([^\]]+)\]/g, (marker, chunkId) =>
+                numbers.has(chunkId) ? `[${numbers.get(chunkId)}]` : marker);
+        }
+
+        // One collapsed <details> per source: "[n] Title", opening to the passage
+        function renderSources(sources) {
+            const container = document.createElement('div');
+            container.className = 'answer-sources';
+
+            const label = document.createElement('div');
+            label.className = 'answer-sources-label';
+            label.textContent = 'Sources';
+            container.appendChild(label);
+
+            sources.forEach((source, i) => {
+                const details = document.createElement('details');
+                const summary = document.createElement('summary');
+                summary.textContent = `[${i + 1}] ${source.title}`;
+                const passage = document.createElement('p');
+                passage.textContent = source.text;
+                details.appendChild(summary);
+                details.appendChild(passage);
+                container.appendChild(details);
+            });
+            return container;
+        }
+
+        // "AI answer · 1.2 s" or "Passages only (AI unavailable) · 1.2 s"
+        function renderAnswerMeta(debug) {
+            const meta = document.createElement('div');
+            meta.className = 'answer-meta';
+            const parts = [MODE_LABELS[debug.answer_mode]];
+            if (typeof debug.latency_ms === 'number') {
+                parts.push(`${(debug.latency_ms / 1000).toFixed(1)} s`);
+            }
+            meta.textContent = parts.join(' · ');
+            return meta;
+        }
+
         function showTyping() {
             typingIndicator.style.display = 'flex';
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -418,14 +791,24 @@
             typingIndicator.style.display = 'none';
         }
 
+        // Disable Send and the sample questions while an answer is pending
+        function setWaiting(waiting) {
+            pending = waiting;
+            sendBtn.disabled = waiting;
+            document.querySelectorAll('.sample-question').forEach(button => {
+                button.disabled = waiting;
+            });
+        }
+
         async function sendMessage() {
+            if (pending) return; // one question at a time, so Enter can't send a second
             const message = messageInput.value.trim();
             if (!message) return;
 
             // Add user message
             addMessage(message, true);
             messageInput.value = '';
-            sendBtn.disabled = true;
+            setWaiting(true);
             showTyping();
 
             try {
@@ -443,7 +826,7 @@
                 if (response.ok) {
                     const data = await response.json();
                     hideTyping();
-                    addMessage(data.text, false, data.citations || []);
+                    addMessage(data.text, false, data.sources || [], data.debug || null);
                 } else {
                     hideTyping();
                     addMessage('Sorry, I encountered an error processing your question. Please try again later. 🔧', false);
@@ -452,7 +835,7 @@
                 hideTyping();
                 addMessage('Sorry, I cannot connect to the server. Please make sure it\'s running and try again. 🔌', false);
             } finally {
-                sendBtn.disabled = false;
+                setWaiting(false);
                 messageInput.focus();
             }
         }

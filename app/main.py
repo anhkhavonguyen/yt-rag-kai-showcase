@@ -322,10 +322,12 @@ async def get_documents():
 )
 async def seed_documents(request: SeedRequest = SeedRequest()):
     """
-    Seed the knowledge base with documents.
+    Replace the knowledge base with documents.
 
-    If no documents are provided, seeds with default policy/FAQ documents.
-    Documents are chunked, embedded, and stored in the vector database.
+    If no documents are provided (or an empty list), seeds the default profile documents.
+    Documents are chunked, embedded, and stored in the vector database; after
+    they're saved, every chunk this seed didn't include is deleted. The response
+    reports both counts.
     When SEED_TOKEN is set, requires "Authorization: Bearer <SEED_TOKEN>", or the
     signed-in admin session sent from this site (the admin page).
     """
@@ -345,11 +347,11 @@ async def seed_documents(request: SeedRequest = SeedRequest()):
             ]
         
         # Process documents through RAG pipeline
-        inserted_count = await rag_service.seed_documents(documents)
-        
-        logger.info(f"Seeding completed: {inserted_count} chunks inserted")
-        
-        return SeedResponse(inserted=inserted_count)
+        result = await rag_service.seed_documents(documents)
+
+        logger.info(f"Seeding completed: {result.inserted} chunks inserted, {result.removed} removed")
+
+        return SeedResponse(inserted=result.inserted, removed=result.removed)
         
     except Exception as e:
         logger.error(f"Seeding failed: {e}")
@@ -383,6 +385,7 @@ async def answer_question(request: AnswerRequest):
         response = AnswerResponse(
             text=result['text'],
             citations=result['citations'],
+            sources=result.get('sources', []),
             debug={
                 'top_doc_ids': result['debug']['top_doc_ids'],
                 'latency_ms': result['debug']['latency_ms'],

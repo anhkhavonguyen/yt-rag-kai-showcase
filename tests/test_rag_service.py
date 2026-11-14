@@ -6,7 +6,10 @@ fakes from conftest.py via the `rag` fixture.
 
 import asyncio
 
+import pytest
+
 from app.data.default_documents import DEFAULT_DOCUMENTS
+from app.services.rag import SeedResult
 
 
 def result(chunk_id: str, text: str = "text", similarity: float = 0.9) -> dict:
@@ -116,27 +119,169 @@ def test_answer_query_reports_error_without_provider_text_when_embedding_fails(r
     assert fake_chat.calls == []
 
 
+# --- answer sources ---------------------------------------------------------
+
+def test_sources_hold_the_passage_and_title_of_each_citation(rag, fake_db, fake_chat):
+    fake_db.search_results = [
+        result("kai_overview_v1#1", "Kha Vo, who goes by Kai, is a Team Lead."),
+        result("kai_expertise_v1#1", "Kai works with .NET and Azure."),
+    ]
+    fake_chat.answer = "Kai works with .NET and Azure [kai_expertise_v1#1]."
+
+    answer = asyncio.run(rag.answer_query("What can Kai do?"))
+
+    assert answer["citations"] == ["kai_expertise_v1#1"]
+    assert answer["sources"] == [
+        {"chunk_id": "kai_expertise_v1#1", "title": "Core expertise", "text": "Kai works with .NET and Azure."},
+    ]
+
+
+def test_sources_follow_citation_order(rag, fake_db, fake_chat):
+    fake_db.search_results = [result("kai_overview_v1#1"), result("kai_expertise_v1#1")]
+    fake_chat.answer = "First [kai_expertise_v1#1], then [kai_overview_v1#1]."
+
+    answer = asyncio.run(rag.answer_query("Who is Kai?"))
+
+    assert [s["chunk_id"] for s in answer["sources"]] == ["kai_expertise_v1#1", "kai_overview_v1#1"]
+    assert [s["title"] for s in answer["sources"]] == ["Core expertise", "Who Kai is"]
+
+
+def test_fallback_answer_has_a_source_per_passage(rag, fake_db, fake_chat):
+    fake_db.search_results = [result("kai_overview_v1#1", "Overview."), result("kai_dxc_v1#1", "DXC.")]
+    fake_chat.unavailable = True
+
+    answer = asyncio.run(rag.answer_query("Who is Kai?"))
+
+    assert answer["debug"]["answer_mode"] == "extractive"
+    assert [(s["chunk_id"], s["text"]) for s in answer["sources"]] == [
+        ("kai_overview_v1#1", "Overview."),
+        ("kai_dxc_v1#1", "DXC."),
+    ]
+
+
+def test_a_chunk_from_another_document_is_titled_by_its_chunk_id(rag, fake_db, fake_chat):
+    fake_db.search_results = [result("notes#1", "Some notes.")]
+    fake_chat.answer = "See [notes#1]."
+
+    answer = asyncio.run(rag.answer_query("Notes?"))
+
+    assert answer["sources"] == [{"chunk_id": "notes#1", "title": "notes#1", "text": "Some notes."}]
+
+
+def test_no_sources_without_results_or_on_error(rag, fake_db, fake_embedding):
+    fake_db.search_results = []
+    assert asyncio.run(rag.answer_query("Who is Kai?"))["sources"] == []
+
+    fake_embedding.error = RuntimeError("quota")
+    assert asyncio.run(rag.answer_query("Who is Kai?"))["sources"] == []
+
+
 # --- seeding ----------------------------------------------------------------
 
 def test_seed_documents_stores_chunks_with_embeddings(rag, fake_db, fake_embedding):
     documents = [
-        {"chunk_id": "returns", "source": "returns.md", "text": "Items can be returned within 30 days."},
-        {"chunk_id": "shipping", "source": "shipping.md", "text": "Orders ship within 2 business days."},
+        {"chunk_id": "overview", "source": "profile.md", "text": "Kai is a Team Lead."},
+        {"chunk_id": "expertise", "source": "profile.md", "text": "Kai works with .NET and Azure."},
     ]
 
-    inserted = asyncio.run(rag.seed_documents(documents))
+    result = asyncio.run(rag.seed_documents(documents))
 
-    assert inserted == len(fake_db.upserted) == 2
-    assert [c["chunk_id"] for c in fake_db.upserted] == ["returns#1", "shipping#1"]
+    assert result == SeedResult(inserted=2, removed=0)
+    assert [c["chunk_id"] for c in fake_db.upserted] == ["overview#1", "expertise#1"]
     for chunk in fake_db.upserted:
         assert isinstance(chunk["embedding"], list)
         assert len(chunk["embedding"]) == fake_embedding.dimensions
     assert fake_embedding.embedded_texts == [c["text"] for c in fake_db.upserted]
+    assert fake_db.writes == ["upsert", "delete"]  # delete only after the save
 
 
 def test_seed_documents_without_input_uses_default_documents(rag, fake_db):
-    inserted = asyncio.run(rag.seed_documents(None))
+    result = asyncio.run(rag.seed_documents(None))
 
-    assert inserted == len(fake_db.upserted) >= len(DEFAULT_DOCUMENTS)
-    seeded_bases = {c["chunk_id"].split("#")[0] for c in fake_db.upserted}
-    assert seeded_bases == {d["chunk_id"] for d in DEFAULT_DOCUMENTS}
+    assert result.inserted == len(DEFAULT_DOCUMENTS)
+    assert set(fake_db.stored) == {f"{doc['chunk_id']}#1" for doc in DEFAULT_DOCUMENTS}
+
+
+# --- a seed replaces the knowledge base -------------------------------------
+
+POLICY_CHUNKS = ("policy_returns_v1#1", "policy_shipping_v1#1", "sizing_guide_v1#1", "support_contact_v1#1")
+
+
+def test_seed_removes_the_old_store_chunks(rag, fake_db):
+    fake_db.store(*POLICY_CHUNKS)
+
+    result = asyncio.run(rag.seed_documents(None))
+
+    assert result.removed == 4
+    assert set(fake_db.stored) == {f"{doc['chunk_id']}#1" for doc in DEFAULT_DOCUMENTS}
+
+
+def test_seed_drops_the_chunks_a_shorter_document_no_longer_has(rag, fake_db):
+    fake_db.store("overview#1", "overview#2")
+
+    result = asyncio.run(rag.seed_documents([{"chunk_id": "overview", "source": "p.md", "text": "Kai, in short."}]))
+
+    assert result == SeedResult(inserted=1, removed=1)
+    assert list(fake_db.stored) == ["overview#1"]
+    assert fake_db.stored["overview#1"]["text"] == "Kai, in short."
+
+
+def test_seeding_the_same_documents_again_removes_nothing(rag, fake_db):
+    asyncio.run(rag.seed_documents(None))
+    first = dict(fake_db.stored)
+
+    result = asyncio.run(rag.seed_documents(None))
+
+    assert result.removed == 0
+    assert set(fake_db.stored) == set(first)
+    assert all(fake_db.stored[cid]["text"] == first[cid]["text"] for cid in first)
+
+
+def test_failed_embedding_changes_nothing(rag, fake_db, fake_embedding):
+    fake_db.store(*POLICY_CHUNKS)
+    fake_embedding.error = RuntimeError("quota used up")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(rag.seed_documents(None))
+
+    assert fake_db.writes == []
+    assert set(fake_db.stored) == set(POLICY_CHUNKS)
+
+
+def test_failed_save_deletes_nothing(rag, fake_db):
+    fake_db.store(*POLICY_CHUNKS)
+    fake_db.upsert_error = RuntimeError("database unavailable")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(rag.seed_documents(None))
+
+    assert fake_db.writes == ["upsert"]
+    assert set(fake_db.stored) == set(POLICY_CHUNKS)
+
+
+def test_failed_delete_keeps_the_new_chunks_and_a_retry_finishes(rag, fake_db):
+    fake_db.store(*POLICY_CHUNKS)
+    fake_db.delete_error = RuntimeError("delete failed")
+    profile_chunks = {f"{doc['chunk_id']}#1" for doc in DEFAULT_DOCUMENTS}
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(rag.seed_documents(None))
+
+    assert set(fake_db.stored) == profile_chunks | set(POLICY_CHUNKS)
+
+    fake_db.delete_error = None
+    result = asyncio.run(rag.seed_documents(None))
+
+    assert result.removed == 4
+    assert set(fake_db.stored) == profile_chunks
+
+
+def test_blank_documents_change_nothing(rag, fake_db, fake_embedding):
+    fake_db.store(*POLICY_CHUNKS)
+
+    result = asyncio.run(rag.seed_documents([{"chunk_id": "blank", "source": "b.md", "text": "   "}]))
+
+    assert result == SeedResult(inserted=0, removed=0)
+    assert fake_embedding.embedded_texts == []
+    assert fake_db.writes == []
+    assert set(fake_db.stored) == set(POLICY_CHUNKS)

@@ -69,14 +69,16 @@ The region can't be changed after the service is created. To use another region,
   SEED_TOKEN=<SEED_TOKEN> python chatbot.py https://<your-service>.onrender.com
   ```
 
-Without the token or a signed-in session, `/seed` returns `401`, and `/admin` redirects to the sign-in page. Everything else (`/chat`, `/answer`, `/healthz`, `/documents`) is public. The customer chat page has no editor and no link to `/admin`.
+A seed **replaces the whole knowledge base**. The new chunks are saved first, and then every chunk that wasn't in this seed is deleted. The response reports both counts, for example `{"inserted": 10, "removed": 4}` the first time the profile documents replace the old store documents. If embedding or saving fails, nothing is deleted. If only the deletion fails, run the same seed again.
+
+Without the token or a signed-in session, `/seed` returns `401`, and `/admin` redirects to the sign-in page. Everything else (`/chat`, `/answer`, `/healthz`, `/documents`) is public. The chat page has no editor and no link to `/admin`.
 
 ## 5. Ask a question
 
 ```bash
 curl -X POST https://<your-service>.onrender.com/answer \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is your return policy?"}'
+  -d '{"query": "Who is Kai?"}'
 ```
 
 `debug.answer_mode` in the response tells you how the answer was produced:
@@ -91,10 +93,10 @@ curl -X POST https://<your-service>.onrender.com/answer \
 ## Good to know
 
 - **Cold starts.** A free Render service sleeps after 15 minutes without traffic. The next request wakes it in about a minute; the browser shows a loading page, and the CLI or curl may time out, so retry. Render can also restart free services at any time.
-- **Free-tier quotas.** Gemini limits requests per minute and per day. Seeding the 4 default documents takes one embedding request. When the chat quota runs out, answers fall back to `extractive`.
+- **Free-tier quotas.** Gemini limits requests per minute and per day. Seeding the 10 default documents takes one embedding request. When the chat quota runs out, answers fall back to `extractive`.
 - **Supabase pausing.** Free projects pause after a period of inactivity. Resume yours from the Supabase dashboard.
 - **Changing settings later.** Render asks for the secrets only when the Blueprint is first created. To change a key or model later, edit it in **yt-rag → Environment**. Saving redeploys the service.
-- **Switching the embedding model.** Vectors from different models can't be compared. After changing `OPENAI_EMBED_MODEL`, seed **all** documents again (seeding overwrites chunks by `chunk_id`).
+- **Switching the embedding model.** Vectors from different models can't be compared. After changing `OPENAI_EMBED_MODEL`, seed **all** documents again (a seed replaces the whole knowledge base).
 - **Embedding size.** The database column is `VECTOR(1536)`, so `EMBEDDING_DIMENSIONS` must stay `1536`. Longer vectors from the model are shortened and re-normalized automatically.
 
 ## Running locally with Gemini

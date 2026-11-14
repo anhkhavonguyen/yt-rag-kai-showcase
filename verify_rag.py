@@ -61,10 +61,10 @@ async def prove_real_rag():
     print("-" * 50)
     
     test_queries = [
-        "Can I return shoes?",                    # Should match return policy
-        "How much is shipping?",                  # Should match shipping policy  
-        "What size should I order?",              # Should match sizing guide
-        "How do I contact support?",              # Should match customer support
+        "Who is Kai?",                            # Should match kai_overview_v1
+        "What can Kai do?",                       # Should match kai_expertise_v1
+        "Which certifications does Kai have?",    # Should match kai_education_certifications_v1
+        "What does Kai do at DEKRA?",             # Should match kai_current_role_v1
         "What's the weather like?",               # Should find no good matches
     ]
     
@@ -102,9 +102,9 @@ async def prove_real_rag():
     
     try:
         # Get embeddings for different texts
-        text1 = "return policy shoes"
-        text2 = "shipping cost fast delivery" 
-        text3 = "return policy shoes"  # Same as text1
+        text1 = "Kai's Azure cloud experience"
+        text2 = "Kai's certifications and education"
+        text3 = "Kai's Azure cloud experience"  # Same as text1
         
         emb1 = await embedding_service.embed_query(text1)
         emb2 = await embedding_service.embed_query(text2)

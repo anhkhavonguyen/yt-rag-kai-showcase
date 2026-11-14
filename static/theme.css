@@ -6,6 +6,10 @@
  * - at least 4.5:1 for --text, --text-muted, --danger and --success on --bg and --surface,
  *   for --text and --text-muted on --surface-raised, and for --on-accent on --accent;
  * - at least 3:1 for --accent and --focus on --bg, and for --focus on --surface.
+ * The chat page's profile panel and answers add:
+ * - at least 4.5:1 for --text on --tag-bg (skill tags), for --accent on --chip-bg (sample
+ *   questions), and for --accent on --surface and --surface-raised (links and source titles);
+ * - at least 3:1 for --focus on --surface-raised and --chip-bg.
  */
 :root {
     color-scheme: dark;
@@ -20,6 +24,8 @@
     --danger: #ff8a8a;
     --success: #5fd4a0;
     --focus: #ffd166;
+    --tag-bg: #2a3044;
+    --chip-bg: #1f2340;
 }
 
 body {
