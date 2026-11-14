@@ -315,7 +315,7 @@
 
 ## Open Questions
 
-- **Certificate verify URLs** for Anthropic, AWS (Credly), Oracle, and the Microsoft transcript share link. Until they're supplied, each certificate is shown without a link (decision 6). Adding them changes no spec, design or task.
+- **Certificate verify URLs:** the Anthropic (Skilljar) and AWS (Credly) links are on the page. The Oracle link and the Microsoft transcript share link are still to come. Until then, those two are shown without a link (decision 6). Adding them changes no spec, design or task.
 - **Pronouns:** the documents and prompt use the name "Kai" throughout and assume no pronouns. If Kai wants specific pronouns used, add one sentence to `kai_overview_v1` and one line to the prompt.
 - **The other certifications and skills:** the paste shows only 4 of the 13 certifications and none of the 32 skills in full. More can be added later to `kai_education_certifications_v1`, `kai_expertise_v1` and the profile panel, together.
 

@@ -307,6 +307,17 @@ def test_profile_panel_shows_kai_skills_and_certifications(pages):
     assert LINKEDIN in [link.get("href") for link in panel.links]
 
 
+def test_certifications_link_to_their_public_verification_pages(pages):
+    verify_links = {
+        link.get("href") for link in profile_panel(pages["/chat"]).links if "Verify" in link["text"]
+    }
+
+    assert verify_links == {
+        "https://verify.skilljar.com/c/8ef23mi7ch5g",  # Claude Code in Action, Anthropic
+        "https://www.credly.com/badges/666fe70b-04f6-4311-a8e3-d2583b76df77",  # AWS Educate ML Foundations
+    }
+
+
 def test_every_certification_on_the_page_is_in_the_education_document(pages):
     education = next(d["text"] for d in DEFAULT_DOCUMENTS if d["chunk_id"] == "kai_education_certifications_v1")
     names = re.findall(r'<div class="cert-name">([^<]+)</div>', pages["/chat"])
