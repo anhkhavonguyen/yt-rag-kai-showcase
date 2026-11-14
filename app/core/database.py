@@ -14,6 +14,11 @@ from .config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# PostgREST returns at most 1000 rows per read, so larger reads are paged.
+READ_PAGE_SIZE = 1000
+# Row ids per delete request, keeping the request URL short.
+DELETE_BATCH_SIZE = 100
+
 
 class Database:
     """Supabase database operations manager for RAG functionality."""
@@ -141,7 +146,54 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to upsert chunks: {e}")
             raise
-    
+
+    async def delete_chunks_except(self, keep_chunk_ids) -> int:
+        """
+        Delete every chunk whose chunk_id isn't in `keep_chunk_ids`.
+
+        Rows are read as (id, chunk_id) in pages, because PostgREST caps a read at
+        1000 rows, and deleted by their integer id in batches. Chunk IDs can hold
+        characters such as "#", "," or "(" that PostgREST filters treat specially;
+        integer ids need no quoting.
+
+        Args:
+            keep_chunk_ids: chunk IDs to keep
+
+        Returns:
+            Number of chunks deleted
+        """
+        keep = set(keep_chunk_ids)
+
+        try:
+            client = self.get_client(admin=True)
+
+            stale_ids: List[int] = []
+            start = 0
+            while True:
+                result = (
+                    client.table('rag_chunks')
+                    .select('id, chunk_id')
+                    .order('id')
+                    .range(start, start + READ_PAGE_SIZE - 1)
+                    .execute()
+                )
+                rows = result.data or []
+                stale_ids.extend(row['id'] for row in rows if row['chunk_id'] not in keep)
+                if len(rows) < READ_PAGE_SIZE:
+                    break
+                start += READ_PAGE_SIZE
+
+            for i in range(0, len(stale_ids), DELETE_BATCH_SIZE):
+                batch = stale_ids[i:i + DELETE_BATCH_SIZE]
+                client.table('rag_chunks').delete().in_('id', batch).execute()
+
+            logger.info(f"Deleted {len(stale_ids)} chunks that weren't seeded")
+            return len(stale_ids)
+
+        except Exception as e:
+            logger.error(f"Failed to delete stale chunks: {e}")
+            raise
+
     async def vector_search(self, query_embedding: List[float], top_k: int = 6) -> List[Dict[str, Any]]:
         """
         Perform vector similarity search using Supabase SDK.

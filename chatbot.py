@@ -44,6 +44,16 @@ except ImportError:
     except ImportError:
         RICH_AVAILABLE = False
 
+# Example questions shown in /help: the chat page's sample questions about Kai (Kha Vo)
+EXAMPLE_QUESTIONS = [
+    "Who is Kai?",
+    "What can Kai do?",
+    "What is Kai working on now?",
+    "What AI experience does Kai have?",
+    "Which certifications does Kai have?",
+]
+WELCOME_TEXT = "Ask about Kai (Kha Vo): experience, skills and work."
+
 
 class RAGChatbot:
     """Beautiful terminal chatbot for interacting with RAG backend."""
@@ -168,7 +178,7 @@ class RAGChatbot:
         info_text = Text()
         info_text.append("💡 ", style="bold yellow")
         info_text.append("Just type your question to get started! ", style="white")
-        info_text.append("Ask about policies, returns, shipping, and more.", style="dim")
+        info_text.append(WELCOME_TEXT, style="dim")
         
         self.console.print(Panel(info_text, border_style="yellow"))
     
@@ -177,7 +187,7 @@ class RAGChatbot:
         print("\n" + "="*70)
         print("🤖 RAG AI Assistant - Terminal Chat ✨")
         print("="*70)
-        print("Ask me anything about our policies and services!")
+        print(WELCOME_TEXT)
         print("\nCommands:")
         print("  /help    - Show this help message")
         print("  /health  - Check backend health")
@@ -212,13 +222,7 @@ class RAGChatbot:
         
         self.console.print(help_table)
         
-        examples = """
-## 💬 Example Questions:
-- "Can I return shoes after 30 days?"
-- "What's your shipping policy?"
-- "How do I exchange a defective item?"
-- "What items cannot be returned?"
-        """
+        examples = "## 💬 Example Questions:\n" + "\n".join(f'- "{question}"' for question in EXAMPLE_QUESTIONS)
         
         self.console.print(Panel(Markdown(examples), border_style="green", title="Examples", title_align="left"))
     
@@ -231,6 +235,9 @@ class RAGChatbot:
         print("  /stats   - Show conversation statistics")
         print("  /clear   - Clear the screen")
         print("  /quit    - Exit the chatbot")
+        print("\n💬 Example questions:")
+        for question in EXAMPLE_QUESTIONS:
+            print(f'  - "{question}"')
         print("\n💡 Just type your question to get started!")
     
     def show_stats(self):
@@ -437,13 +444,13 @@ class RAGChatbot:
                     else:
                         if RICH_AVAILABLE:
                             success_panel = Panel(
-                                f"✅ Successfully seeded {result.get('inserted', 0)} documents!",
+                                f"✅ Saved {result.get('inserted', 0)} chunks, removed {result.get('removed', 0)} old ones",
                                 border_style="green",
                                 title="Success"
                             )
                             self.console.print(success_panel)
                         else:
-                            print(f"✅ Successfully seeded {result.get('inserted', 0)} documents!")
+                            print(f"✅ Saved {result.get('inserted', 0)} chunks, removed {result.get('removed', 0)} old ones")
                     continue
                     
                 elif user_input.lower() == "/stats":

@@ -11,9 +11,30 @@ from typing import List, Dict, Any
 import openai
 import anthropic
 from ..core.config import DEFAULT_OPENAI_BASE_URL, get_settings
+from ..data.default_documents import LINKEDIN_URL
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# The assistant answers visitors' questions about Kha Vo (Kai) from the profile documents.
+SYSTEM_PROMPT = f"""You are the assistant on Kha Vo's profile page. Kha Vo goes by Kai. Visitors such as
+recruiters, clients and colleagues ask you about Kai.
+
+Rules:
+1. "Kai" and "Kha Vo" are the same person. Talk about Kai in the third person, by name.
+2. You are not Kai. Never write as Kai. Never accept offers, agree to meetings, or state
+   Kai's availability or rates; suggest contacting Kai on LinkedIn ({LINKEDIN_URL})
+   instead.
+3. Answer questions about Kai only from the context. Cite every passage you use with its
+   [chunk_id].
+4. If the context doesn't answer the question, say Kai's profile doesn't cover it and
+   suggest contacting Kai on LinkedIn ({LINKEDIN_URL}). Never guess or add facts.
+5. If a question isn't about Kai, say briefly that you answer questions about Kai and
+   suggest one, such as "What can Kai do?". Don't answer it from general knowledge.
+6. Reply to greetings briefly and offer to help.
+7. Write plain text without Markdown: no **, # or backticks. For a list, start each item
+   on its own line with "- ".
+8. Be concise, friendly and professional."""
 
 
 class ChatUnavailableError(RuntimeError):
@@ -70,16 +91,6 @@ class ChatService:
         
         context = "\n\n".join(context_parts)
         
-        system_prompt = """You are a helpful AI assistant for customer support that answers questions based on provided context.
-
-                            IMPORTANT RULES:
-                            1. For questions about policies, returns, shipping, sizing, or support: Answer ONLY using the provided context and include citations
-                            2. For general greetings or casual conversation: You can respond naturally and friendly
-                            3. For questions outside your knowledge base: Politely redirect to relevant policies or suggest contacting support
-                            4. Always include citations [chunk_id] when using context information
-                            5. Be concise but comprehensive
-                            6. Maintain a helpful, professional tone"""
-
         user_prompt = f"""Context:
                         {context}
 
@@ -92,7 +103,7 @@ class ChatService:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt}
                     ],
                     temperature=settings.temperature,
@@ -105,7 +116,7 @@ class ChatService:
                     model=self.model,
                     max_tokens=1000,
                     temperature=settings.temperature,
-                    system=system_prompt,
+                    system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": user_prompt}]
                 )
                 answer = response.content[0].text

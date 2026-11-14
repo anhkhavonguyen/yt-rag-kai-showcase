@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app.main
+from app.services.rag import SeedResult
 
 ADMIN_TOKEN = "s3cret-admin-token-7f3a"
 WRONG_TOKEN = "wrong-token-XYZ-123"
@@ -49,7 +50,7 @@ def no_seed_token(request, monkeypatch):
 
 @pytest.fixture
 def mock_seed(monkeypatch):
-    mock = AsyncMock(return_value=4)
+    mock = AsyncMock(return_value=SeedResult(inserted=4, removed=0))
     monkeypatch.setattr(app.main.rag_service, "seed_documents", mock)
     return mock
 
@@ -377,7 +378,7 @@ def test_seed_with_the_bearer_token_still_works(client, seed_token, mock_seed):
     response = client.post("/seed", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
 
     assert response.status_code == 200
-    assert response.json() == {"inserted": 4}
+    assert response.json() == {"inserted": 4, "removed": 0}
 
 
 @pytest.mark.parametrize("origin", [f"http://{HOST}", f"https://{HOST}"], ids=["http", "https-behind-proxy"])
@@ -385,7 +386,7 @@ def test_seed_from_the_signed_in_admin_page(client, seed_token, session, mock_se
     response = client.post("/seed", headers=with_session(cookie(session), Origin=origin))
 
     assert response.status_code == 200
-    assert response.json() == {"inserted": 4}
+    assert response.json() == {"inserted": 4, "removed": 0}
     mock_seed.assert_awaited_once()
 
 

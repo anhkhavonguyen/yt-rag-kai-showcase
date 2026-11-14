@@ -72,16 +72,16 @@ async def test_setup():
         
         # Test 5: Seeding documents
         print("\n5️⃣  Testing document seeding...")
-        inserted_count = await rag_service.seed_documents()
-        
-        if inserted_count == 0:
-            print("   ⚠️  No new documents inserted (may already exist)")
+        seeded = await rag_service.seed_documents()
+
+        if seeded.inserted == 0:
+            print("   ⚠️  No document chunks inserted")
         else:
-            print(f"   ✅ Successfully seeded {inserted_count} document chunks")
+            print(f"   ✅ Seeded {seeded.inserted} document chunks, removed {seeded.removed} old ones")
         
         # Test 6: RAG query
         print("\n6️⃣  Testing RAG query...")
-        test_query = "Can I return shoes after 30 days?"
+        test_query = "Who is Kai?"
         result = await rag_service.answer_query(test_query)
         
         if not result['text'] or "error" in result['text'].lower():
@@ -131,7 +131,7 @@ async def main():
         print("\n🎯 Next Steps:")
         print("1. Start the server: uvicorn main:app --reload --port 8000")
         print("2. Test the health endpoint: curl http://localhost:8000/healthz")
-        print("3. Ask a question: curl -X POST http://localhost:8000/answer -H 'Content-Type: application/json' -d '{\"query\":\"What is your return policy?\"}'")
+        print("3. Ask a question: curl -X POST http://localhost:8000/answer -H 'Content-Type: application/json' -d '{\"query\":\"Who is Kai?\"}'")
         print("4. Visit the interactive docs: http://localhost:8000/docs")
         sys.exit(0)
     else:

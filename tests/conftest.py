@@ -86,11 +86,35 @@ class FakeDatabase:
         self.search_results = list(search_results or [])
         self.healthy = healthy
         self.upserted: list[dict] = []
+        self.stored: dict[str, dict] = {}  # the table's chunks, by chunk ID
+        self.writes: list[str] = []  # "upsert" / "delete", in call order
         self.search_calls: list[tuple[list[float], int]] = []
+        self.upsert_error: Exception | None = None  # set to make upsert_chunks raise
+        self.delete_error: Exception | None = None  # set to make delete_chunks_except raise
+
+    def store(self, *chunk_ids: str) -> None:
+        """Put chunks in the table, as if seeded earlier."""
+        for chunk_id in chunk_ids:
+            self.stored[chunk_id] = {"chunk_id": chunk_id, "source": "old.md", "text": f"old {chunk_id}"}
 
     async def upsert_chunks(self, chunks):
+        self.writes.append("upsert")
+        if self.upsert_error:
+            raise self.upsert_error
         self.upserted.extend(chunks)
+        for chunk in chunks:
+            self.stored[chunk["chunk_id"]] = chunk
         return len(chunks)
+
+    async def delete_chunks_except(self, keep_chunk_ids):
+        self.writes.append("delete")
+        if self.delete_error:
+            raise self.delete_error
+        keep = set(keep_chunk_ids)
+        stale = [chunk_id for chunk_id in self.stored if chunk_id not in keep]
+        for chunk_id in stale:
+            del self.stored[chunk_id]
+        return len(stale)
 
     async def vector_search(self, query_embedding, top_k=6):
         self.search_calls.append((query_embedding, top_k))

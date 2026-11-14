@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 class SeedResponse(BaseModel):
     """Response model for the /seed endpoint."""
     inserted: int = Field(..., description="Number of chunks successfully inserted")
+    removed: int = Field(..., description="Number of chunks deleted because this seed didn't include them")
 
 
 class DebugInfo(BaseModel):
@@ -28,10 +29,20 @@ class DebugInfo(BaseModel):
     )
 
 
+class Source(BaseModel):
+    """The passage behind one citation."""
+    chunk_id: str = Field(..., description="The cited chunk's ID")
+    title: str = Field(..., description="Title of the document the chunk came from, or the chunk ID")
+    text: str = Field(..., description="The passage the answer was built from")
+
+
 class AnswerResponse(BaseModel):
     """Response model for the /answer endpoint."""
     text: str = Field(..., description="Generated answer with inline citations")
     citations: List[str] = Field(..., description="List of chunk IDs used as sources")
+    sources: List[Source] = Field(
+        default_factory=list, description="One entry per citation, in the same order"
+    )
     debug: DebugInfo = Field(..., description="Debug information")
 
 

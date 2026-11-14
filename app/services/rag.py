@@ -9,12 +9,13 @@ Orchestrates the complete RAG pipeline: chunk → embed → search → generate.
 import logging
 import time
 import re
+from dataclasses import dataclass
 from typing import List, Dict, Any
 from ..core.database import db
 from .embedding import embedding_service
 from .chat import ChatUnavailableError, chat_service
 from .chunker import chunker
-from ..data.default_documents import DEFAULT_DOCUMENTS
+from ..data.default_documents import DEFAULT_DOCUMENTS, DOCUMENT_TITLES
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,13 @@ NO_RESULTS_TEXT = (
 )
 EXTRACTIVE_LEAD = "A generated answer isn't available right now. Here are the most relevant passages:"
 RETRIEVAL_ERROR_TEXT = "I couldn't search the knowledge base right now. Please try again shortly."
+
+
+@dataclass(frozen=True)
+class SeedResult:
+    """What a seed changed: chunks saved, and old chunks deleted."""
+    inserted: int
+    removed: int
 
 
 class RAGService:
@@ -36,44 +44,56 @@ class RAGService:
         self.chat_service = chat_service
         self.chunker = chunker
     
-    async def seed_documents(self, documents: List[Dict[str, str]] = None) -> int:
+    async def seed_documents(self, documents: List[Dict[str, str]] = None) -> SeedResult:
         """
-        Seed the knowledge base with documents.
-        
+        Replace the knowledge base with these documents.
+
+        The new chunks are embedded and saved first; only then is every other chunk
+        deleted. If embedding or saving fails, nothing is deleted. If the documents
+        produce no chunks, nothing changes and no embeddings are requested.
+
         Args:
             documents: Optional list of documents. If None, uses default documents.
-            
+
         Returns:
-            Number of chunks successfully inserted
+            How many chunks were saved and how many old chunks were deleted
         """
         start_time = time.time()
-        
+
         # Use default documents if none provided
         if documents is None:
             documents = DEFAULT_DOCUMENTS
             logger.info("Using default documents for seeding")
-        
+
         try:
             # Step 1: Chunk documents
             chunks = self.chunker.chunk_documents(documents)
             logger.info(f"Created {len(chunks)} chunks from {len(documents)} documents")
-            
+            if not chunks:
+                logger.info("The documents produced no chunks; the knowledge base is unchanged")
+                return SeedResult(inserted=0, removed=0)
+
             # Step 2: Generate embeddings for all chunks
             texts = [chunk['text'] for chunk in chunks]
             embeddings = await self.embedding_service.embed_texts(texts)
-            
+
             # Step 3: Combine chunks with embeddings
             for chunk, embedding in zip(chunks, embeddings):
                 chunk['embedding'] = embedding
-            
+
             # Step 4: Store in database
             inserted_count = await self.db.upsert_chunks(chunks)
-            
+
+            # Step 5: With the new chunks saved, delete every chunk that wasn't seeded
+            removed_count = await self.db.delete_chunks_except([chunk['chunk_id'] for chunk in chunks])
+
             elapsed_ms = int((time.time() - start_time) * 1000)
-            logger.info(f"Seeding completed in {elapsed_ms}ms: {inserted_count} chunks inserted")
-            
-            return inserted_count
-            
+            logger.info(
+                f"Seeding completed in {elapsed_ms}ms: {inserted_count} chunks inserted, {removed_count} removed"
+            )
+
+            return SeedResult(inserted=inserted_count, removed=removed_count)
+
         except Exception as e:
             logger.error(f"Seeding failed: {e}")
             raise
@@ -87,16 +107,24 @@ class RAGService:
             top_k: Number of chunks to retrieve
             
         Returns:
-            Dictionary with answer, citations, and debug info. debug.answer_mode
+            Dictionary with answer, citations, sources (the passage and document
+            title behind each citation) and debug info. debug.answer_mode
             is "generated", "extractive" (model unavailable, passages returned),
             "no_results" or "error" (failed before the model was called).
         """
         start_time = time.time()
 
-        def result(text: str, citations: List[str], top_doc_ids: List[str], answer_mode: str) -> Dict[str, Any]:
+        def result(
+            text: str,
+            citations: List[str],
+            top_doc_ids: List[str],
+            answer_mode: str,
+            context_blocks: List[Dict[str, Any]] = (),
+        ) -> Dict[str, Any]:
             return {
                 'text': text,
                 'citations': citations,
+                'sources': self._sources(citations, context_blocks),
                 'debug': {
                     'top_doc_ids': top_doc_ids,
                     'latency_ms': int((time.time() - start_time) * 1000),
@@ -128,13 +156,32 @@ class RAGService:
             answer_text = await self.chat_service.generate_answer(query, context_blocks)
         except ChatUnavailableError:
             logger.warning("Chat model unavailable; returning retrieved passages instead")
-            return result(self._extractive_answer(context_blocks), context_ids, context_ids, 'extractive')
+            return result(
+                self._extractive_answer(context_blocks), context_ids, context_ids, 'extractive', context_blocks
+            )
 
         # Step 5: Extract citations from answer
         citations = self._extract_citations(answer_text, context_blocks)
-        response = result(answer_text, citations, context_ids, 'generated')
+        response = result(answer_text, citations, context_ids, 'generated', context_blocks)
         logger.info(f"Query processed in {response['debug']['latency_ms']}ms with {len(citations)} citations")
         return response
+
+    def _sources(self, citations: List[str], context_blocks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """The passage behind each citation, in citation order, with its document's title.
+
+        The title comes from the default documents by document ID (the chunk ID
+        before "#"); a chunk from any other document gets its chunk ID as title.
+        """
+        blocks = {block['chunk_id']: block for block in context_blocks}
+        return [
+            {
+                'chunk_id': chunk_id,
+                'title': DOCUMENT_TITLES.get(chunk_id.split('#')[0], chunk_id),
+                'text': blocks[chunk_id].get('text', ''),
+            }
+            for chunk_id in citations
+            if chunk_id in blocks
+        ]
 
     def _extractive_answer(self, context_blocks: List[Dict[str, Any]]) -> str:
         """Answer text built from the retrieved passages, one per paragraph."""

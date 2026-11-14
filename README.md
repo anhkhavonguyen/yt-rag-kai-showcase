@@ -155,7 +155,7 @@ curl http://localhost:8000/healthz
 To edit and seed documents in the browser, open the admin page at [http://localhost:8000/admin](http://localhost:8000/admin). When `SEED_TOKEN` is set, it first sends you to the sign-in page at `/admin/login`, where you sign in with that token. The session lasts 8 hours or until you sign out. Or use the API:
 
 ```bash
-# Seed with default documents
+# Seed with the default documents (Kha Vo's profile, from app/data/default_documents.py)
 curl -X POST http://localhost:8000/seed
 
 # Or seed with custom documents
@@ -164,12 +164,18 @@ curl -X POST http://localhost:8000/seed \
   -d '{
     "docs": [
       {
-        "chunk_id": "policy_returns_v1#window",
-        "source": "https://help.example.com/returns",
-        "text": "You can return unworn items within 30 days of purchase..."
+        "chunk_id": "kai_overview_v1",
+        "source": "https://www.linkedin.com/in/khavo2907/",
+        "text": "Who is Kai? Kha Vo, who goes by Kai, is a Team Lead..."
       }
     ]
   }'
+```
+
+**A seed replaces the whole knowledge base.** The new chunks are embedded and saved first, and then every chunk that wasn't in this seed is deleted. If embedding or saving fails, nothing is deleted. The response says how many chunks were saved and how many old ones were removed:
+
+```json
+{"inserted": 10, "removed": 4}
 ```
 
 ### Ask Questions (RAG)
@@ -177,7 +183,7 @@ curl -X POST http://localhost:8000/seed \
 curl -X POST http://localhost:8000/answer \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Can I return shoes after 30 days?",
+    "query": "What can Kai do?",
     "top_k": 6
   }'
 ```
@@ -185,14 +191,21 @@ curl -X POST http://localhost:8000/answer \
 **Example Response:**
 ```json
 {
-  "text": "Based on our return policy, you can return unworn shoes within 30 days of purchase [policy_returns_v1#window]. Items must be in original condition...",
-  "citations": ["policy_returns_v1#window", "policy_returns_v1#conditions"],
+  "text": "Kai has core expertise in enterprise software with C#, .NET and Azure, solution architecture, technical leadership and production engineering [kai_expertise_v1#1], and is expanding into generative AI such as RAG and AI agents [kai_ai_focus_v1#1].",
+  "citations": ["kai_expertise_v1#1", "kai_ai_focus_v1#1"],
+  "sources": [
+    {"chunk_id": "kai_expertise_v1#1", "title": "Core expertise", "text": "What can Kai do? Kha Vo (Kai) has core expertise in five areas..."},
+    {"chunk_id": "kai_ai_focus_v1#1", "title": "AI focus", "text": "Kai (Kha Vo) is actively expanding expertise in generative AI..."}
+  ],
   "debug": {
-    "top_doc_ids": ["policy_returns_v1#window", "policy_returns_v1#conditions"],
-    "latency_ms": 1250
+    "top_doc_ids": ["kai_expertise_v1#1", "kai_ai_focus_v1#1", "kai_overview_v1#1", "kai_current_role_v1#1"],
+    "latency_ms": 1250,
+    "answer_mode": "generated"
   }
 }
 ```
+
+`sources` holds one entry per citation, in the same order: the cited passage and the title of its document. The chat page lists them under each answer.
 
 ## 🔧 Configuration Options
 

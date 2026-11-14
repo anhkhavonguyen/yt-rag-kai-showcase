@@ -10,15 +10,19 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app.main
+from app.services.rag import SeedResult
 from app.services.chat import ChatService
 
 
 @pytest.fixture
 def mock_answer(monkeypatch):
     mock = AsyncMock(return_value={
-        "text": "Returns are accepted within 30 days [returns#1].",
-        "citations": ["returns#1"],
-        "debug": {"top_doc_ids": ["returns#1", "shipping#1"], "latency_ms": 12, "answer_mode": "generated"},
+        "text": "Kai is a Team Lead at Orient Software [kai_overview_v1#1].",
+        "citations": ["kai_overview_v1#1"],
+        "sources": [{"chunk_id": "kai_overview_v1#1", "title": "Who Kai is", "text": "Kha Vo, who goes by Kai..."}],
+        "debug": {
+            "top_doc_ids": ["kai_overview_v1#1", "kai_expertise_v1#1"], "latency_ms": 12, "answer_mode": "generated",
+        },
     })
     monkeypatch.setattr(app.main.rag_service, "answer_query", mock)
     return mock
@@ -36,7 +40,7 @@ def seed_token(monkeypatch):
 
 @pytest.fixture
 def mock_seed(monkeypatch):
-    mock = AsyncMock(return_value=5)
+    mock = AsyncMock(return_value=SeedResult(inserted=5, removed=2))
     monkeypatch.setattr(app.main.rag_service, "seed_documents", mock)
     return mock
 
@@ -65,7 +69,21 @@ def test_seed_without_body_seeds_default_documents(client, mock_seed):
     response = client.post("/seed")
 
     assert response.status_code == 200
-    assert response.json() == {"inserted": 5}
+    assert response.json() == {"inserted": 5, "removed": 2}
+    mock_seed.assert_awaited_once_with(None)
+
+
+def test_seed_response_reports_inserted_and_removed_as_integers(client, mock_seed):
+    body = client.post("/seed").json()
+
+    assert set(body) == {"inserted", "removed"}
+    assert isinstance(body["inserted"], int) and isinstance(body["removed"], int)
+
+
+def test_seed_with_an_empty_document_list_seeds_the_defaults(client, mock_seed):
+    response = client.post("/seed", json={"docs": []})
+
+    assert response.status_code == 200
     mock_seed.assert_awaited_once_with(None)
 
 
@@ -78,23 +96,31 @@ def test_seed_with_documents_passes_them_to_the_rag_service(client, mock_seed):
     response = client.post("/seed", json={"docs": docs})
 
     assert response.status_code == 200
-    assert response.json() == {"inserted": 5}
+    assert response.json() == {"inserted": 5, "removed": 2}
     mock_seed.assert_awaited_once_with(docs)
 
 
 def test_answer_returns_text_citations_and_debug_info(client, mock_answer):
-    response = client.post("/answer", json={"query": "What is the return policy?"})
+    response = client.post("/answer", json={"query": "Who is Kai?"})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["text"] == "Returns are accepted within 30 days [returns#1]."
-    assert body["citations"] == ["returns#1"]
+    assert body["text"] == "Kai is a Team Lead at Orient Software [kai_overview_v1#1]."
+    assert body["citations"] == ["kai_overview_v1#1"]
     assert body["debug"] == {
-        "top_doc_ids": ["returns#1", "shipping#1"],
+        "top_doc_ids": ["kai_overview_v1#1", "kai_expertise_v1#1"],
         "latency_ms": 12,
         "answer_mode": "generated",
     }
-    mock_answer.assert_awaited_once_with(query="What is the return policy?", top_k=6)
+    mock_answer.assert_awaited_once_with(query="Who is Kai?", top_k=6)
+
+
+def test_answer_carries_the_sources_unchanged(client, mock_answer):
+    body = client.post("/answer", json={"query": "Who is Kai?"}).json()
+
+    assert body["sources"] == [
+        {"chunk_id": "kai_overview_v1#1", "title": "Who Kai is", "text": "Kha Vo, who goes by Kai..."},
+    ]
 
 
 def test_answer_falls_back_to_passages_without_leaking_provider_error(client, rag, fake_db, monkeypatch):
@@ -178,7 +204,7 @@ def test_seed_accepts_correct_token(client, seed_token, mock_seed):
     response = client.post("/seed", headers={"Authorization": f"Bearer {seed_token}"})
 
     assert response.status_code == 200
-    assert response.json() == {"inserted": 5}
+    assert response.json() == {"inserted": 5, "removed": 2}
     mock_seed.assert_awaited_once_with(None)
 
 
