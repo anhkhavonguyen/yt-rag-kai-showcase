@@ -18,7 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
 
-from .core import admin_session
+from .core import admin_session, observability
 from .core.config import get_settings
 from .core.database import db
 from .models.requests import SeedRequest, AnswerRequest
@@ -121,6 +121,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting RAG API application")
+    # First, so the rest of startup can be traced. Never raises: on any problem
+    # tracing stays off with one warning.
+    observability.setup(settings)
     warn_if_seed_unprotected()
 
     try:
@@ -141,6 +144,11 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down RAG API application")
     await db.disconnect()
+    # Send traces still buffered, e.g. when the free instance spins down.
+    try:
+        observability.flush()
+    except Exception as e:
+        logger.warning(f"Could not send pending traces at shutdown: {type(e).__name__}")
 
 
 # Create FastAPI application
@@ -392,9 +400,8 @@ async def answer_question(request: AnswerRequest):
                 'answer_mode': result['debug']['answer_mode'],
             }
         )
-        
-        logger.info(f"Query processed successfully in {result['debug']['latency_ms']}ms")
-        
+
+        # rag_service logs one "Answer finished" line per question, with its trace ID.
         return response
         
     except Exception as e:

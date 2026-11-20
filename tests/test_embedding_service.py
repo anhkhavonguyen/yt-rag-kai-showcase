@@ -119,3 +119,58 @@ def test_query_embedding_has_configured_size(settings):
 
 def test_fit_dimensions_handles_zero_prefix():
     assert fit_dimensions([0.0, 0.0, 3.0], 2) == [0.0, 0.0]
+
+
+# --- tracing: one embedding span per batch -----------------------------------
+
+class QuotaError(Exception):
+    status_code = 429
+
+
+def test_each_batch_is_one_embedding_span(settings, monkeypatch, recorder):
+    monkeypatch.setattr(settings, "embedding_batch_size", 2)
+    service, api = service_returning(1536)
+
+    asyncio.run(service.embed_texts(["text-0", "text-1", "text-2"]))
+
+    spans = recorder.of_kind("embedding")
+    assert [span["input"] for span in spans] == [[{"text": "text-0"}, {"text": "text-1"}], [{"text": "text-2"}]]
+    assert spans[0]["name"] == "embed_texts"
+    assert (spans[0]["model"], spans[0]["provider"]) == ("test-embed-model", "openai")
+    assert spans[0]["metadata"] == {"texts": 2, "dimensions": 1536}
+    assert spans[0]["output"] == "2 vectors of 1536 dimensions"
+    assert all(span["error"] is None and span["finished"] for span in spans)
+
+
+def test_failed_embedding_request_marks_its_span(settings, recorder):
+    def failing(**request):
+        raise QuotaError("quota exceeded for key AIza-SECRET-123")
+
+    service = EmbeddingService()
+    service.openai_client = SimpleNamespace(embeddings=SimpleNamespace(create=failing))
+
+    with pytest.raises(QuotaError):
+        asyncio.run(service.embed_texts(["text-0"]))
+
+    [span] = recorder.of_kind("embedding")
+    assert span["error"] == {"type": "QuotaError", "http_status": 429}
+    assert "AIza-SECRET-123" not in recorder.dump()
+
+
+def test_answer_with_failing_embedding_has_no_retrieval_or_llm_span(settings, monkeypatch, recorder, fake_db, fake_chat):
+    def failing(**request):
+        raise QuotaError("quota exceeded")
+
+    service = EmbeddingService()
+    service.openai_client = SimpleNamespace(embeddings=SimpleNamespace(create=failing))
+    monkeypatch.setattr(rag_service, "embedding_service", service)
+    monkeypatch.setattr(rag_service, "db", fake_db)
+    monkeypatch.setattr(rag_service, "chat_service", fake_chat)
+
+    result = asyncio.run(rag_service.answer_query("Who is Kai?"))
+
+    assert result["debug"]["answer_mode"] == "error"
+    [root] = recorder.roots()
+    assert [span["kind"] for span in recorder.children(root)] == ["embedding"]
+    assert recorder.of_kind("embedding")[0]["error"]["type"] == "QuotaError"
+    assert root["metadata"]["answer_mode"] == "error"

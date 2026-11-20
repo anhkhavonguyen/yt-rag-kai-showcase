@@ -11,6 +11,7 @@ import time
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Any
+from ..core import observability
 from ..core.database import db
 from .embedding import embedding_service
 from .chat import ChatUnavailableError, chat_service
@@ -57,20 +58,31 @@ class RAGService:
 
         Returns:
             How many chunks were saved and how many old chunks were deleted
+
+        Traced as one workflow span with embedding spans per batch and a task
+        span for each database write.
         """
+        with observability.workflow("seed_knowledge_base") as span:
+            return await self._seed(documents, span)
+
+    async def _seed(self, documents, span) -> SeedResult:
+        """The steps behind `seed_documents`; `span` is its workflow span."""
         start_time = time.time()
 
         # Use default documents if none provided
         if documents is None:
             documents = DEFAULT_DOCUMENTS
             logger.info("Using default documents for seeding")
+        span.record(metadata={"documents": len(documents)})
 
         try:
             # Step 1: Chunk documents
             chunks = self.chunker.chunk_documents(documents)
             logger.info(f"Created {len(chunks)} chunks from {len(documents)} documents")
+            span.record(metadata={"chunks": len(chunks)})
             if not chunks:
                 logger.info("The documents produced no chunks; the knowledge base is unchanged")
+                span.record(metadata={"inserted": 0, "removed": 0})
                 return SeedResult(inserted=0, removed=0)
 
             # Step 2: Generate embeddings for all chunks
@@ -82,15 +94,22 @@ class RAGService:
                 chunk['embedding'] = embedding
 
             # Step 4: Store in database
-            inserted_count = await self.db.upsert_chunks(chunks)
+            with observability.task("save_chunks") as step:
+                step.record(metadata={"chunks": len(chunks)})
+                inserted_count = await self.db.upsert_chunks(chunks)
+                step.record(metadata={"inserted": inserted_count})
 
             # Step 5: With the new chunks saved, delete every chunk that wasn't seeded
-            removed_count = await self.db.delete_chunks_except([chunk['chunk_id'] for chunk in chunks])
+            with observability.task("delete_old_chunks") as step:
+                step.record(metadata={"kept": len(chunks)})
+                removed_count = await self.db.delete_chunks_except([chunk['chunk_id'] for chunk in chunks])
+                step.record(metadata={"removed": removed_count})
 
             elapsed_ms = int((time.time() - start_time) * 1000)
             logger.info(
                 f"Seeding completed in {elapsed_ms}ms: {inserted_count} chunks inserted, {removed_count} removed"
             )
+            span.record(metadata={"inserted": inserted_count, "removed": removed_count, "latency_ms": elapsed_ms})
 
             return SeedResult(inserted=inserted_count, removed=removed_count)
 
@@ -111,7 +130,36 @@ class RAGService:
             title behind each citation) and debug info. debug.answer_mode
             is "generated", "extractive" (model unavailable, passages returned),
             "no_results" or "error" (failed before the model was called).
+
+        Traced as one workflow span with embedding, retrieval and chat model
+        spans under it (see app/core/observability.py).
         """
+        with observability.workflow("answer_question") as span:
+            span.record(input=query, metadata={"top_k": top_k})
+            response = await self._answer(query, top_k)
+
+            debug = response['debug']
+            span.record(
+                output=response['text'],
+                metadata={
+                    'answer_mode': debug['answer_mode'],
+                    'citations': response['citations'],
+                    'latency_ms': debug['latency_ms'],
+                },
+                tags={'answer_mode': debug['answer_mode']},
+            )
+            trace_id = observability.current_trace_id()
+            logger.info(
+                "Answer finished: mode=%s latency=%sms citations=%s%s",
+                debug['answer_mode'],
+                debug['latency_ms'],
+                len(response['citations']),
+                f" trace_id={trace_id}" if trace_id else "",
+            )
+            return response
+
+    async def _answer(self, query: str, top_k: int) -> Dict[str, Any]:
+        """The pipeline behind `answer_query`, without its tracing and summary log line."""
         start_time = time.time()
 
         def result(
@@ -137,7 +185,10 @@ class RAGService:
             query_embedding = await self.embedding_service.embed_query(query)
 
             # Step 2: Vector similarity search
-            search_results = await self.db.vector_search(query_embedding, top_k)
+            with observability.retrieval("vector_search") as span:
+                span.record(input=query, metadata={"top_k": top_k})
+                search_results = await self.db.vector_search(query_embedding, top_k)
+                span.record(output=[self._retrieved_document(row) for row in search_results])
 
             if not search_results:
                 return result(NO_RESULTS_TEXT, [], [], 'no_results')
@@ -162,9 +213,20 @@ class RAGService:
 
         # Step 5: Extract citations from answer
         citations = self._extract_citations(answer_text, context_blocks)
-        response = result(answer_text, citations, context_ids, 'generated', context_blocks)
-        logger.info(f"Query processed in {response['debug']['latency_ms']}ms with {len(citations)} citations")
-        return response
+        return result(answer_text, citations, context_ids, 'generated', context_blocks)
+
+    @staticmethod
+    def _title(chunk_id: str) -> str:
+        """Document title for a chunk: by document ID (before "#"), else the chunk ID."""
+        return DOCUMENT_TITLES.get(chunk_id.split('#')[0], chunk_id)
+
+    def _retrieved_document(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """A search result as a traced document: chunk ID, title, score and text."""
+        chunk_id = row.get('chunk_id', '')
+        document = {'id': chunk_id, 'name': self._title(chunk_id), 'text': row.get('text', '')}
+        if isinstance(row.get('similarity'), (int, float)):
+            document['score'] = row['similarity']
+        return document
 
     def _sources(self, citations: List[str], context_blocks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """The passage behind each citation, in citation order, with its document's title.
@@ -176,7 +238,7 @@ class RAGService:
         return [
             {
                 'chunk_id': chunk_id,
-                'title': DOCUMENT_TITLES.get(chunk_id.split('#')[0], chunk_id),
+                'title': self._title(chunk_id),
                 'text': blocks[chunk_id].get('text', ''),
             }
             for chunk_id in citations

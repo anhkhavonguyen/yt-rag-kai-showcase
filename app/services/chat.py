@@ -10,11 +10,14 @@ import logging
 from typing import List, Dict, Any
 import openai
 import anthropic
+from ..core import observability
 from ..core.config import DEFAULT_OPENAI_BASE_URL, get_settings
 from ..data.default_documents import LINKEDIN_URL
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+MAX_ANSWER_TOKENS = 1000
 
 # The assistant answers visitors' questions about Kha Vo (Kai) from the profile documents.
 SYSTEM_PROMPT = f"""You are the assistant on Kha Vo's profile page. Kha Vo goes by Kai. Visitors such as
@@ -65,6 +68,8 @@ class ChatService:
             self.model = settings.anthropic_chat_model
         else:
             raise ValueError(f"Unsupported AI provider: {self.provider}")
+
+        self.provider_label = observability.provider_label(settings.openai_base_url, self.provider)
         
         logger.info(f"Initialized chat service with {self.provider} ({self.model})")
     
@@ -98,46 +103,74 @@ class ChatService:
 
                         Please provide an answer based on the context above, including appropriate citations."""
 
-        try:
-            if self.provider == "openai":
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=settings.temperature,
-                    max_tokens=1000
-                )
-                answer = response.choices[0].message.content
-                
-            elif self.provider == "anthropic":
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1000,
-                    temperature=settings.temperature,
-                    system=SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_prompt}]
-                )
-                answer = response.content[0].text
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
 
-        except Exception as e:
-            # Log the error type and HTTP status only: provider messages can echo
-            # request or account details, and none of it may reach API responses.
-            status = getattr(e, "status_code", None)
-            logger.error(
-                "Chat model request failed: %s%s",
-                type(e).__name__,
-                f" (HTTP {status})" if status else "",
+        # One LLM span per model request, including a failed one.
+        with observability.llm("chat_completion", model=self.model, provider=self.provider_label) as span:
+            span.record(
+                input=messages,
+                metadata={"temperature": settings.temperature, "max_tokens": MAX_ANSWER_TOKENS},
             )
-            raise ChatUnavailableError(f"Chat model request failed ({type(e).__name__})") from None
+            try:
+                if self.provider == "openai":
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=settings.temperature,
+                        max_tokens=MAX_ANSWER_TOKENS
+                    )
+                    answer = response.choices[0].message.content
+                    usage = _token_metrics(getattr(response, "usage", None), "prompt_tokens", "completion_tokens")
 
-        if not answer or not answer.strip():
-            logger.error("Chat model returned an empty answer")
-            raise ChatUnavailableError("Chat model returned an empty answer")
+                elif self.provider == "anthropic":
+                    response = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=MAX_ANSWER_TOKENS,
+                        temperature=settings.temperature,
+                        system=SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": user_prompt}]
+                    )
+                    answer = response.content[0].text
+                    usage = _token_metrics(getattr(response, "usage", None), "input_tokens", "output_tokens")
+
+            except Exception as e:
+                # Log the error type and HTTP status only: provider messages can echo
+                # request or account details, and none of it may reach API responses
+                # or traces.
+                status = observability.http_status_of(e)
+                logger.error(
+                    "Chat model request failed: %s%s",
+                    type(e).__name__,
+                    f" (HTTP {status})" if status else "",
+                )
+                span.fail(type(e).__name__, status)
+                raise ChatUnavailableError(f"Chat model request failed ({type(e).__name__})") from None
+
+            span.record(output=[{"role": "assistant", "content": answer or ""}], metrics=usage)
+            if not answer or not answer.strip():
+                logger.error("Chat model returned an empty answer")
+                span.fail("EmptyAnswer")
+                raise ChatUnavailableError("Chat model returned an empty answer")
 
         logger.info(f"Generated answer using {self.provider}")
         return answer
+
+
+def _token_metrics(usage, input_field: str, output_field: str) -> dict:
+    """Token counts from a provider's usage object, as span metrics; {} if not reported."""
+    metrics = {}
+    input_tokens = getattr(usage, input_field, None)
+    output_tokens = getattr(usage, output_field, None)
+    if isinstance(input_tokens, int):
+        metrics["input_tokens"] = input_tokens
+    if isinstance(output_tokens, int):
+        metrics["output_tokens"] = output_tokens
+    if len(metrics) == 2:
+        metrics["total_tokens"] = input_tokens + output_tokens
+    return metrics
 
 
 # Global service instance

@@ -19,6 +19,8 @@ def assert_placeholder_settings(settings: Settings) -> None:
     assert settings.embedding_send_dimensions is True
     assert not settings.seed_token
     assert settings.environment == "test"
+    assert settings.dd_api_key == ""
+    assert settings.observability_enabled is False
 
 
 def test_settings_use_placeholder_values():
@@ -44,8 +46,20 @@ def test_placeholders_override_conflicting_env_file(tmp_path):
             "AI_PROVIDER=anthropic",
             "SEED_TOKEN=real-admin-token",
             "ENVIRONMENT=production",
+            "DD_API_KEY=real-datadog-key",
+            "OBSERVABILITY_ENABLED=true",
         ]),
         encoding="utf-8",
     )
 
     assert_placeholder_settings(Settings(_env_file=env_file))
+
+
+def test_datadog_key_in_env_file_does_not_turn_tracing_on(tmp_path):
+    """A developer's .env with a Datadog key still leaves tracing off in tests."""
+    from app.core import observability
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DD_API_KEY=real-datadog-key\nOBSERVABILITY_ENABLED=true\n", encoding="utf-8")
+
+    assert observability.setup(Settings(_env_file=env_file)) is False

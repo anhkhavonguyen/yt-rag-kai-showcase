@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # Unset or empty leaves /seed open, which is meant for local development only.
     seed_token: Optional[str] = Field(default=None, env="SEED_TOKEN")
 
+    # Datadog Agent Observability (optional; see app/core/observability.py).
+    # Tracing is on only when DD_API_KEY is set and OBSERVABILITY_ENABLED isn't false.
+    dd_api_key: str = Field(default="", env="DD_API_KEY")
+    dd_site: str = Field(default="datadoghq.com", env="DD_SITE")  # from the Datadog account's URL
+    dd_llmobs_ml_app: str = Field(default="yt-rag", env="DD_LLMOBS_ML_APP")
+    observability_enabled: bool = Field(default=True, env="OBSERVABILITY_ENABLED")
+    # False sends metadata only: no question, passage, prompt or answer text.
+    observability_capture_text: bool = Field(default=True, env="OBSERVABILITY_CAPTURE_TEXT")
+
     # Application Configuration
     environment: str = Field(default="development", env="ENVIRONMENT")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

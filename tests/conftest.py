@@ -24,6 +24,9 @@ PLACEHOLDER_SETTINGS = {
     "AI_PROVIDER": "openai",
     "SEED_TOKEN": "",  # empty = /seed open; tests that need a token set it explicitly
     "ENVIRONMENT": "test",
+    # Datadog tracing stays off: no key, and switched off as a second guard.
+    "DD_API_KEY": "",
+    "OBSERVABILITY_ENABLED": "false",
 }
 
 # Direct assignment (not setdefault): overwrite anything already in the shell.
@@ -34,6 +37,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.core.database  # noqa: E402
 import app.main  # noqa: E402
+from app.core import observability  # noqa: E402
 from app.services.chat import ChatUnavailableError, chat_service  # noqa: E402
 from app.services.embedding import embedding_service  # noqa: E402
 from app.services.rag import rag_service  # noqa: E402
@@ -59,6 +63,89 @@ def block_external_services(monkeypatch):
     monkeypatch.setattr(app.core.database, "create_client", forbid_supabase)
     monkeypatch.setattr(embedding_service, "openai_client", _ForbiddenClient("OpenAI embeddings"))
     monkeypatch.setattr(chat_service, "client", _ForbiddenClient("chat model"))
+
+
+@pytest.fixture(autouse=True)
+def block_datadog(monkeypatch):
+    """Guarantee no test loads the Datadog SDK or sends spans; tracing starts and ends off."""
+
+    attempts: list[str] = []
+
+    # setup() turns its own errors into "tracing off", so record the attempt
+    # and fail the test at teardown rather than relying on the raise.
+    def forbid_sdk(*args, **kwargs):
+        attempts.append("load the Datadog SDK")
+        raise AssertionError("Test tried to load the Datadog SDK")
+
+    def forbid_recorder(*args, **kwargs):
+        attempts.append("create a DatadogRecorder")
+        raise AssertionError("Test tried to create a DatadogRecorder")
+
+    monkeypatch.setattr(observability, "_load_llmobs", forbid_sdk)
+    monkeypatch.setattr(observability, "DatadogRecorder", forbid_recorder)
+    observability.reset()
+    yield
+    observability.reset()
+    assert not attempts, f"Test tried to {attempts[0]}"
+
+
+class FakeRecorder:
+    """Test double for a tracing backend: keeps every span as a dict, in start order.
+
+    Each span has kind, name, model, provider, parent (the parent span dict or
+    None), trace_id, input, output, metadata, metrics, tags, error
+    ({"type", "http_status"} or None) and finished.
+    """
+
+    def __init__(self):
+        self.spans: list[dict] = []
+        self.flushes = 0
+
+    def start(self, kind, name, model, provider, parent):
+        span = {
+            "kind": kind, "name": name, "model": model, "provider": provider, "parent": parent,
+            "trace_id": parent["trace_id"] if parent else f"trace-{len(self.spans) + 1}",
+            "input": None, "output": None, "metadata": {}, "metrics": {}, "tags": {},
+            "error": None, "finished": False,
+        }
+        self.spans.append(span)
+        return span
+
+    def annotate(self, raw, *, input, output, metadata, metrics, tags):
+        raw.update(input=input, output=output, metadata=dict(metadata), metrics=dict(metrics), tags=dict(tags))
+
+    def fail(self, raw, error_type, http_status):
+        raw["error"] = {"type": error_type, "http_status": http_status}
+
+    def finish(self, raw):
+        raw["finished"] = True
+
+    def trace_id(self, raw):
+        return raw["trace_id"]
+
+    def flush(self):
+        self.flushes += 1
+
+    def of_kind(self, kind: str) -> list[dict]:
+        return [span for span in self.spans if span["kind"] == kind]
+
+    def roots(self) -> list[dict]:
+        return [span for span in self.spans if span["parent"] is None]
+
+    def children(self, span: dict) -> list[dict]:
+        return [child for child in self.spans if child["parent"] is span]
+
+    def dump(self) -> str:
+        """Every recorded value as one string, for "appears nowhere" checks."""
+        return repr([{key: value for key, value in span.items() if key != "parent"} for span in self.spans])
+
+
+@pytest.fixture
+def recorder():
+    """Tracing on, into a FakeRecorder, with text capture on."""
+    fake = FakeRecorder()
+    observability.use_recorder(fake)
+    return fake
 
 
 class FakeEmbeddingService:

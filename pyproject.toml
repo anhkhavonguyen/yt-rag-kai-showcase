@@ -18,3 +18,6 @@ select = ["E4", "E7", "E9", "F"]
 testpaths = ["tests"]
 # Put the repository root on sys.path so tests can import `app` and `main`.
 pythonpath = ["."]
+# ddtrace (the optional Datadog SDK) registers a pytest plugin that imports the
+# SDK into every run. Tests never use it: tracing is checked with a fake recorder.
+addopts = "-p no:ddtrace"

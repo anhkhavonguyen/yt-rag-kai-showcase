@@ -10,6 +10,7 @@ import logging
 import math
 from typing import List, Sequence
 import openai
+from ..core import observability
 from ..core.config import DEFAULT_OPENAI_BASE_URL, get_settings
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class EmbeddingService:
             max_retries=settings.openai_max_retries,
         )
         self.embed_model = settings.openai_embed_model
+        self.provider = observability.provider_label(settings.openai_base_url)
     
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
@@ -58,7 +60,8 @@ class EmbeddingService:
             texts: List of text strings to embed
             
         Texts are sent in batches of at most EMBEDDING_BATCH_SIZE, and every
-        returned vector has exactly EMBEDDING_DIMENSIONS values.
+        returned vector has exactly EMBEDDING_DIMENSIONS values. Each batch is
+        traced as one embedding span.
 
         Returns:
             One embedding per input text, in input order
@@ -74,18 +77,27 @@ class EmbeddingService:
                 if settings.embedding_send_dimensions:
                     request["dimensions"] = dimensions
 
-                response = self.openai_client.embeddings.create(**request)
-
-                items = list(response.data)
-                if len(items) != len(batch):
-                    raise ValueError(
-                        f"Embedding provider returned {len(items)} embeddings for {len(batch)} texts"
+                with observability.embedding(
+                    "embed_texts", model=self.embed_model, provider=self.provider
+                ) as span:
+                    span.record(
+                        input=[{"text": text} for text in batch],
+                        metadata={"texts": len(batch), "dimensions": dimensions},
                     )
-                # Keep input order even if the provider reorders its results.
-                if all(isinstance(getattr(item, "index", None), int) for item in items):
-                    items.sort(key=lambda item: item.index)
+                    response = self.openai_client.embeddings.create(**request)
 
-                embeddings.extend(fit_dimensions(item.embedding, dimensions) for item in items)
+                    items = list(response.data)
+                    if len(items) != len(batch):
+                        raise ValueError(
+                            f"Embedding provider returned {len(items)} embeddings for {len(batch)} texts"
+                        )
+                    # Keep input order even if the provider reorders its results.
+                    if all(isinstance(getattr(item, "index", None), int) for item in items):
+                        items.sort(key=lambda item: item.index)
+
+                    vectors = [fit_dimensions(item.embedding, dimensions) for item in items]
+                    span.record(output=f"{len(vectors)} vectors of {dimensions} dimensions")
+                embeddings.extend(vectors)
 
             logger.info(f"Generated embeddings for {len(texts)} texts")
             return embeddings
