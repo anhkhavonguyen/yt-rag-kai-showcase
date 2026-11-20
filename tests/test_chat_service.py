@@ -124,3 +124,86 @@ def test_prompt_has_no_store_wording():
     lowered = SYSTEM_PROMPT.lower()
     for wording in ("returns", "shipping", "sizing", "customer support"):
         assert wording not in lowered
+
+
+# --- tracing: one LLM span per model request ---------------------------------
+
+def completion_with_usage(text, usage):
+    def create(**kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+            usage=usage,
+        )
+    return create
+
+
+def test_llm_span_records_model_messages_answer_and_tokens(service, recorder):
+    service.client = openai_style_client(
+        completion_with_usage("Kai is a Team Lead.", SimpleNamespace(prompt_tokens=812, completion_tokens=95))
+    )
+
+    asyncio.run(service.generate_answer("Who is Kai?", CONTEXT))
+
+    [span] = recorder.spans
+    assert (span["kind"], span["name"]) == ("llm", "chat_completion")
+    assert (span["model"], span["provider"]) == ("test-chat-model", "openai")
+    assert span["input"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert span["input"][1]["role"] == "user" and "Who is Kai?" in span["input"][1]["content"]
+    assert span["output"] == [{"role": "assistant", "content": "Kai is a Team Lead."}]
+    assert span["metadata"] == {"temperature": get_settings().temperature, "max_tokens": 1000}
+    assert span["metrics"] == {"input_tokens": 812, "output_tokens": 95, "total_tokens": 907}
+    assert span["error"] is None
+
+
+def test_llm_span_has_no_token_counts_when_provider_reports_none(service, recorder):
+    service.client = openai_style_client(completion_with_usage("Kai is a Team Lead.", None))
+
+    asyncio.run(service.generate_answer("Who is Kai?", CONTEXT))
+
+    assert recorder.spans[0]["metrics"] == {}
+
+
+def test_failed_request_is_one_llm_span_with_type_and_status_only(service, recorder):
+    def failing(**kwargs):
+        raise ProviderError("provider-detail-xyz")
+
+    service.client = openai_style_client(failing)
+
+    with pytest.raises(ChatUnavailableError):
+        asyncio.run(service.generate_answer("Who is Kai?", CONTEXT))
+
+    [span] = recorder.spans
+    assert span["error"] == {"type": "ProviderError", "http_status": 429}
+    assert "provider-detail-xyz" not in recorder.dump()
+
+
+def test_empty_answer_marks_the_llm_span_failed(service, recorder):
+    service.client = openai_style_client(completion(""))
+
+    with pytest.raises(ChatUnavailableError):
+        asyncio.run(service.generate_answer("Who is Kai?", CONTEXT))
+
+    assert recorder.spans[0]["error"] == {"type": "EmptyAnswer", "http_status": None}
+
+
+def test_anthropic_request_is_traced_with_its_usage(monkeypatch, recorder):
+    monkeypatch.setattr(get_settings(), "ai_provider", "anthropic")
+    service = ChatService()
+    service.client = anthropic_style_client(lambda **kwargs: SimpleNamespace(
+        content=[SimpleNamespace(text="Kai is a Team Lead.")],
+        usage=SimpleNamespace(input_tokens=700, output_tokens=40),
+    ))
+
+    asyncio.run(service.generate_answer("Who is Kai?", CONTEXT))
+
+    [span] = recorder.spans
+    assert span["provider"] == "anthropic"
+    assert span["metrics"] == {"input_tokens": 700, "output_tokens": 40, "total_tokens": 740}
+    assert span["output"] == [{"role": "assistant", "content": "Kai is a Team Lead."}]
+
+
+def test_gemini_endpoint_is_labelled_google(monkeypatch):
+    monkeypatch.setattr(get_settings(), "ai_provider", "openai")
+    monkeypatch.setattr(get_settings(), "openai_base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
+
+    assert ChatService().provider_label == "google"

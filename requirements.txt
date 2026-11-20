@@ -6,4 +6,7 @@ pydantic-settings>=2.0.0
 supabase>=2.0.0
 openai>=1.0.0
 anthropic>=0.18.0
-rich>=13.0.0 
+rich>=13.0.0
+# Datadog Agent Observability SDK. Imported only when DD_API_KEY is set
+# (app/core/observability.py); the upper bound guards against SDK API changes.
+ddtrace>=4.17.2,<5 

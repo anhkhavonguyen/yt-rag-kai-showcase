@@ -90,6 +90,52 @@ curl -X POST https://<your-service>.onrender.com/answer \
 | `no_results` | Nothing relevant was found. Seed the knowledge base first |
 | `error` | The question couldn't be searched (e.g. the embedding quota is used up). Try again later |
 
+## 6. Optional: Datadog Agent Observability (free)
+
+[Datadog Agent Observability](https://www.datadoghq.com/product/llm-observability/) (formerly LLM Observability) records each question as a trace. One trace shows the question, the embedding request, the passages found with their scores, the prompt and answer from Gemini, token counts, timings, and the outcome (`answer_mode`). Each seed is a trace too. Tracing is **off until you add a Datadog API key**, and the app works the same without it.
+
+The app sends traces straight to Datadog, so no Datadog Agent runs beside it. That's what makes it work on Render's free plan.
+
+**Free plan limits:** $0, up to **40K LLM spans a month**, and traces are kept for **15 days**. Only the chat model call counts as an LLM span, once per question that reaches the model. Embedding, search and seeding spans don't count. Gemini's free daily quota runs out long before 40K.
+
+### Turn it on
+
+1. **Create a Datadog account** at [datadoghq.com](https://www.datadoghq.com) ("Get started free"). Use the free offering. **If Datadog asks for a credit card or other payment method at any point, stop:** tracing is optional, and nothing else in this guide needs it.
+2. **Choose a site.** Datadog asks for a region (site) at sign-up. Any site works. **AP1 (Japan)** is nearest to the Singapore service. Your site is in the address bar after you sign in:
+
+   | Address after sign-in | `DD_SITE` |
+   |---|---|
+   | `app.datadoghq.com` | `datadoghq.com` |
+   | `us3.datadoghq.com` | `us3.datadoghq.com` |
+   | `us5.datadoghq.com` | `us5.datadoghq.com` |
+   | `app.datadoghq.eu` | `datadoghq.eu` |
+   | `ap1.datadoghq.com` | `ap1.datadoghq.com` |
+   | `ap2.datadoghq.com` | `ap2.datadoghq.com` |
+
+3. **Create an API key:** **Organization Settings → API Keys → New Key**. Copy it. Treat it like a password and never commit it.
+4. **Give both values to the service:**
+   - **New service:** when you create the Blueprint (step 3), Render asks for `DD_API_KEY` and `DD_SITE`. Fill them in, or leave them empty to keep tracing off.
+   - **Existing service:** open **yt-rag → Environment**, add `DD_API_KEY` and `DD_SITE` (**Add Environment Variable**), and save. Saving redeploys the service. Render doesn't ask for variables added to `render.yaml` after the Blueprint was created.
+
+   After the deploy, the Render log shows `Datadog Agent Observability tracing is on: site=…, app=yt-rag`.
+5. **Ask a question** on the chat page.
+
+### Find a trace
+
+- In Datadog, open **LLM Observability → Traces** (the product is now named Agent Observability, so the menu label may differ). Filter by application `yt-rag`. Traces are tagged with `env:production` and the deployed commit as `version`.
+- **From a log line:** each question writes one line to the Render log, such as `Answer finished: mode=extractive latency=31250ms citations=4 trace_id=…`. Search for that `trace_id` in the Traces view to open that question's trace.
+- A failed step is marked as an error with the error type and HTTP status, for example `RateLimitError (HTTP 429)`. The provider's error message is never sent.
+
+### What is sent, and how to turn it off
+
+- **Sent by default:** the visitor's question, the retrieved passages, the prompt sent to the model (including the system prompt), and the answer. Datadog keeps them for 15 days. These questions already go to Gemini's free tier.
+- **Never sent:** API keys, `SEED_TOKEN`, the admin session cookie, or any request header.
+- **Metadata only:** set `OBSERVABILITY_CAPTURE_TEXT=false`. Traces then show text lengths, chunk IDs, scores, titles, model, timings, token counts and outcomes, but no question, passage, prompt or answer text.
+- **Tracing off:** set `OBSERVABILITY_ENABLED=false`, or clear `DD_API_KEY`. Either way it takes effect on the next deploy, with no code change.
+- **Cost estimates:** Datadog may show an estimated cost per call at the model's list price. On Gemini's free tier, nothing is billed.
+
+To trace a local run, put `DD_API_KEY` and `DD_SITE` in your `.env` (see the Datadog block in [`.env.example`](.env.example)). The tests never send traces, even with a key in `.env`.
+
 ## Good to know
 
 - **Cold starts.** A free Render service sleeps after 15 minutes without traffic. The next request wakes it in about a minute; the browser shows a loading page, and the CLI or curl may time out, so retry. Render can also restart free services at any time.

@@ -249,6 +249,20 @@ Adjust in `app/core/config.py`:
 - `default_top_k`: Number of chunks to retrieve (default: 6)
 - `temperature`: LLM creativity (default: 0.1)
 
+### Observability (optional)
+
+Each `/answer` and `/seed` can be traced in [Datadog Agent Observability](https://www.datadoghq.com/product/llm-observability/) on its free plan. One trace shows embedding, the passages found and their scores, the Gemini prompt and answer, token counts and the outcome. Tracing is off until `DD_API_KEY` is set.
+
+```env
+DD_API_KEY=your_datadog_api_key       # empty = tracing off
+DD_SITE=ap1.datadoghq.com             # your Datadog account's site (default datadoghq.com)
+DD_LLMOBS_ML_APP=yt-rag               # application name in Datadog (default yt-rag)
+OBSERVABILITY_ENABLED=true            # false = off even with a key
+OBSERVABILITY_CAPTURE_TEXT=true       # false = metadata only, no question/passage/answer text
+```
+
+Free sign-up, finding traces and what is sent: [DEPLOYMENT.md → Datadog Agent Observability](DEPLOYMENT.md#6-optional-datadog-agent-observability-free).
+
 ## 🐳 Docker Deployment
 
 ```bash

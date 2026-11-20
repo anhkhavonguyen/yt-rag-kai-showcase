@@ -64,3 +64,32 @@ def test_services_use_configured_model_names(settings, monkeypatch):
 
     assert ChatService().model == "gemini-3.5-flash"
     assert EmbeddingService().embed_model == "gemini-embedding-2"
+
+
+def test_observability_settings_defaults():
+    from app.core.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["dd_api_key"].default == ""
+    assert fields["dd_site"].default == "datadoghq.com"
+    assert fields["dd_llmobs_ml_app"].default == "yt-rag"
+    assert fields["observability_enabled"].default is True
+    assert fields["observability_capture_text"].default is True
+
+
+def test_observability_settings_read_from_environment(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("DD_API_KEY", "dd-key-from-env")
+    monkeypatch.setenv("DD_SITE", "ap1.datadoghq.com")
+    monkeypatch.setenv("DD_LLMOBS_ML_APP", "yt-rag-staging")
+    monkeypatch.setenv("OBSERVABILITY_ENABLED", "false")
+    monkeypatch.setenv("OBSERVABILITY_CAPTURE_TEXT", "false")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.dd_api_key == "dd-key-from-env"
+    assert settings.dd_site == "ap1.datadoghq.com"
+    assert settings.dd_llmobs_ml_app == "yt-rag-staging"
+    assert settings.observability_enabled is False
+    assert settings.observability_capture_text is False
