@@ -3,224 +3,157 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light">
     <title>Knowledge Base Editor</title>
     <link rel="stylesheet" href="/static/theme.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
             min-height: 100vh;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+        }
+
+        .top-bar-nav a:not([class*="button"]) {
+            display: inline-flex;
             align-items: center;
-            padding: 20px;
+            gap: 6px;
+        }
+
+        .top-bar-nav .button-secondary {
+            min-height: 36px;
+            padding: 6px 12px;
+        }
+
+        /* Phone: "Back to chat" shows only its arrow; the words stay its accessible name */
+        @media (max-width: 519px) {
+            .top-bar-inner {
+                gap: var(--space-2);
+            }
+
+            .back-label {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                overflow: hidden;
+                clip: rect(0 0 0 0);
+                clip-path: inset(50%);
+                white-space: nowrap;
+            }
+        }
+
+        .admin-main {
+            flex: 1;
+            padding: var(--space-6) 0 var(--space-5);
         }
 
         .admin-container {
-            width: 100%;
-            max-width: 900px;
-            height: 90vh;
-            background: var(--surface);
-            border-radius: 24px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
-            border: 1px solid var(--border);
-            overflow: hidden;
+            max-width: 960px;
+        }
+
+        .page-header {
             display: flex;
             flex-direction: column;
+            gap: var(--space-1);
+            margin-bottom: var(--space-5);
+        }
+
+        .page-header h1 {
+            font-size: var(--text-h2);
+        }
+
+        .page-header p {
+            color: var(--text-muted);
         }
 
         /* Inline sign-in: shown in place of the editor when Save is refused */
         .gate {
-            flex: 1;
             display: flex;
-            padding: 20px;
-            background: var(--bg);
-            overflow-y: auto;
+            padding: var(--space-6) 0;
         }
 
         .gate-form {
             width: 100%;
-            max-width: 380px;
-            margin: auto;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+            max-width: 420px;
+            margin: 0 auto;
+            padding: var(--space-6) var(--space-5);
+            border-top: 4px solid var(--accent);
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: var(--space-3);
         }
 
         .gate-form h2 {
-            color: var(--text);
-            font-size: 18px;
-            font-weight: 600;
+            font-size: 1.375rem;
         }
 
         .gate-form p {
             color: var(--text-muted);
-            font-size: 14px;
+            font-size: var(--text-sm);
         }
 
-        .gate-form label {
-            color: var(--text);
-            font-size: 14px;
-            font-weight: 500;
+        .gate-form .field-label {
+            margin-bottom: 0;
         }
 
-        .gate-form input {
-            padding: 12px 14px;
-            border: 2px solid var(--border);
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.2s ease;
-        }
-
-        .gate-form input:focus {
-            border-color: var(--accent);
-        }
-
-        .gate-form button {
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
+        .gate-form .button-primary {
+            width: 100%;
+            font-size: var(--text-base);
         }
 
         .gate-form .gate-message {
-            min-height: 20px;
+            min-height: 1.5em;
             color: var(--danger);
             font-weight: 500;
         }
 
-        /* Document Editor Section */
-        .editor-section {
-            display: flex;
-            flex-direction: column;
-            background: var(--bg);
-            flex: 1;
-            min-height: 0; /* Important for flex scrolling */
-        }
-
-        .editor-header {
-            padding: 20px;
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 16px;
-        }
-
-        .header-title {
-            flex: 1 1 240px;
-            min-width: 0;
-        }
-
-        .header-actions {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .editor-header h1 {
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .editor-header p {
-            color: var(--text-muted);
-            font-size: 14px;
-            margin: 0;
-        }
-
-        .back-link {
-            color: var(--accent);
-            font-size: 14px;
-            font-weight: 500;
-            text-decoration: none;
-            white-space: nowrap;
-        }
-
-        .back-link:hover {
-            text-decoration: underline;
-        }
-
-        .header-actions .button-secondary {
-            font-size: 14px;
-            font-weight: 500;
-        }
-
+        /* Tabs */
         .editor-tabs {
             display: flex;
-            background: var(--surface);
+            gap: var(--space-1);
+            margin-bottom: var(--space-5);
             border-bottom: 1px solid var(--border);
         }
 
         .tab-button {
-            flex: 1;
-            padding: 12px 20px;
+            margin-bottom: -1px;
+            padding: 10px 14px;
             background: none;
             border: none;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-muted);
-            transition: all 0.2s ease;
             border-bottom: 2px solid transparent;
+            color: var(--text-muted);
+            font-size: var(--text-sm);
+            font-weight: 600;
+            cursor: pointer;
+            transition: color var(--duration) ease, border-color var(--duration) ease;
         }
 
-        .tab-button:focus-visible {
-            outline-offset: -2px;
+        .tab-button:hover {
+            color: var(--text);
         }
 
         .tab-button.active {
             color: var(--accent);
             border-bottom-color: var(--accent);
-            background: var(--surface-raised);
         }
 
-        .tab-content {
-            flex: 1;
-            padding: 20px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            min-height: 0; /* Important for flex scrolling */
-            max-height: 100%; /* Ensure it doesn't exceed container */
+        /* Documents */
+        #documentsContainer {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-4);
         }
 
         .document-item {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-bottom: 15px;
             overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-            transition: all 0.3s ease;
-        }
-
-        .document-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
         }
 
         .document-header {
-            padding: 15px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 14px var(--space-5);
             background: var(--surface-raised);
             border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
         }
 
         .document-header > div {
@@ -229,114 +162,125 @@
 
         .document-id {
             display: block;
-            font-weight: 600;
             color: var(--accent);
-            font-size: 14px;
+            font-family: var(--font-mono);
+            font-size: var(--text-sm);
+            font-weight: 600;
             overflow-wrap: anywhere;
         }
 
         .document-source {
-            font-size: 12px;
             color: var(--text-muted);
-            font-style: italic;
+            font-size: var(--text-xs);
             overflow-wrap: anywhere;
         }
 
         .document-text {
-            padding: 20px;
+            padding: var(--space-4) var(--space-5) var(--space-5);
         }
 
         .document-text textarea {
-            display: block;
-            width: 100%;
-            min-height: 120px;
-            padding: 12px;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 14px;
-            line-height: 1.5;
-            color: var(--text);
-            background: var(--surface-raised);
+            min-height: 140px;
+            font-size: var(--text-sm);
+            line-height: 1.6;
             resize: vertical;
         }
 
-        .document-text textarea:focus {
-            border-color: var(--accent);
+        /* Settings */
+        .settings-card {
+            padding: var(--space-5);
         }
 
-        .save-section {
-            padding: 24px;
+        .settings-card h2 {
+            font-size: var(--text-lg);
+            margin-bottom: var(--space-1);
+        }
+
+        .settings-card h3 {
+            margin: var(--space-5) 0 var(--space-2);
+            font-size: var(--text-base);
+        }
+
+        .settings-intro,
+        .settings-card p {
+            color: var(--text-muted);
+            font-size: var(--text-sm);
+        }
+
+        .settings-card strong {
+            color: var(--text);
+        }
+
+        /* Save bar: floats at the bottom of the window while the documents scroll */
+        .save-bar {
+            position: sticky;
+            bottom: var(--space-4);
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-4);
+            margin-top: var(--space-5);
+            padding: var(--space-3) var(--space-4);
             background: var(--surface);
-            border-top: 1px solid var(--border);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-raised);
+        }
+
+        .save-bar p {
+            color: var(--text-muted);
+            font-size: var(--text-sm);
         }
 
         .save-button {
-            width: 100%;
-            padding: 14px 16px;
-            background: var(--accent);
-            color: var(--on-accent);
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: none;
-            white-space: nowrap;
-            overflow: visible;
-            min-height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            line-height: 1.3;
-            box-sizing: border-box;
-        }
-
-        .save-button.loading {
-            background: var(--surface-raised);
-            color: var(--text);
+            min-width: 140px;
         }
 
         .save-button.success {
             background: var(--success);
+            border-color: var(--success);
             color: var(--on-accent);
         }
 
         .save-button.error {
             background: var(--danger);
+            border-color: var(--danger);
             color: var(--on-accent);
         }
 
-        .save-button:hover {
-            filter: brightness(1.1);
-            transform: none;
+        @media (max-width: 519px) {
+            .save-bar p {
+                display: none;
+            }
+
+            .save-button {
+                width: 100%;
+            }
         }
 
-        .save-button:disabled {
-            background: var(--surface-raised);
-            color: var(--text-muted);
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-            filter: none;
-        }
-
+        /* Notification toast */
         .notification {
             position: fixed;
-            top: 20px;
-            right: 20px;
-            max-width: calc(100vw - 40px);
-            padding: 15px 20px;
-            border-radius: 12px;
-            background: var(--accent);
-            color: var(--on-accent);
-            font-weight: 600;
+            top: calc(var(--topbar-h) + var(--space-3));
+            right: var(--space-4);
             z-index: 1000;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            max-width: min(420px, calc(100vw - 2 * var(--space-4)));
+            padding: 14px 16px;
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--accent);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-raised);
+            font-size: var(--text-sm);
+            font-weight: 500;
             transform: translateX(calc(100% + 40px));
             visibility: hidden;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            transition: transform 220ms ease, visibility 220ms;
         }
 
         .notification.show {
@@ -344,118 +288,102 @@
             visibility: visible;
         }
 
-        .notification.success { background: var(--success); color: var(--on-accent); }
-        .notification.error { background: var(--danger); color: var(--on-accent); }
-        .notification.info { background: var(--accent); color: var(--on-accent); }
-
-        @media (max-width: 768px) {
-            body {
-                padding: 10px;
-            }
-
-            .admin-container {
-                border-radius: 10px;
-                height: 95vh;
-            }
-
-            .editor-header h1 {
-                font-size: 16px;
-            }
-
-            .editor-header,
-            .tab-content {
-                padding: 16px;
-            }
-
-            .document-header {
-                padding: 12px 16px;
-            }
-
-            .document-text {
-                padding: 16px;
-            }
-
-            .save-section {
-                padding: 16px;
-            }
-
-            .notification {
-                top: 10px;
-                right: 10px;
-                max-width: calc(100vw - 20px);
-            }
+        .notification .icon {
+            display: none;
+            margin-top: 1px;
         }
+
+        .notification.success { border-left-color: var(--success); }
+        .notification.error { border-left-color: var(--danger); }
+        .notification.info { border-left-color: var(--accent); }
+        .notification.success .icon-success { display: block; color: var(--success); }
+        .notification.error .icon-error { display: block; color: var(--danger); }
+        .notification.info .icon-info { display: block; color: var(--accent); }
     </style>
 </head>
 <body>
-    <div class="admin-container">
-        <div class="editor-header">
-            <div class="header-title">
-                <h1>📋 Knowledge Base Editor</h1>
+    <header class="top-bar">
+        <div class="top-bar-inner">
+            <span class="wordmark">Meet Kai</span>
+            <span class="badge">Admin</span>
+            <nav class="top-bar-nav" aria-label="Admin">
+                <a href="/chat">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+                    <span class="back-label">Back to chat</span>
+                </a>
+                <button type="button" class="button-secondary" id="signOutBtn">Sign out</button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="admin-main">
+        <div class="container admin-container">
+            <div class="page-header">
+                <h1>Knowledge Base Editor</h1>
                 <p>Edit documents and update the vector database</p>
             </div>
-            <div class="header-actions">
-                <a class="back-link" href="/chat">← Back to chat</a>
-                <button type="button" class="button-secondary" id="signOutBtn">Sign out</button>
-            </div>
-        </div>
 
-        <!-- Inline sign-in: shown when Save is refused because the session has ended.
-             The editor is only hidden meanwhile, so the unsaved edits stay in the page. -->
-        <div class="gate" id="gate" hidden>
-            <form class="gate-form" id="gateForm" novalidate aria-labelledby="gateTitle">
-                <h2 id="gateTitle">🔒 Admin sign in</h2>
-                <p id="gateIntro">Your session has ended. Sign in again to save your changes.</p>
-                <label for="tokenInput">Admin token</label>
-                <input type="password" id="tokenInput" autocomplete="current-password" aria-describedby="gateIntro">
-                <button type="submit" class="button-primary" id="gateBtn">Sign in</button>
-                <p class="gate-message" id="gateMessage" role="alert"></p>
-            </form>
-        </div>
-
-        <!-- Document Editor Section -->
-        <div class="editor-section" id="editorSection">
-            <div class="editor-tabs">
-                <button class="tab-button active" onclick="switchTab('documents')">Documents</button>
-                <button class="tab-button" onclick="switchTab('settings')">Settings</button>
+            <!-- Inline sign-in: shown when Save is refused because the session has ended.
+                 The editor is only hidden meanwhile, so the unsaved edits stay in the page. -->
+            <div class="gate" id="gate" hidden>
+                <form class="card gate-form" id="gateForm" novalidate aria-labelledby="gateTitle">
+                    <h2 id="gateTitle">Admin sign in</h2>
+                    <p id="gateIntro">Your session has ended. Sign in again to save your changes.</p>
+                    <label class="field-label" for="tokenInput">Admin token</label>
+                    <input type="password" id="tokenInput" class="field" autocomplete="current-password" aria-describedby="gateIntro">
+                    <button type="submit" class="button-primary" id="gateBtn">Sign in</button>
+                    <p class="gate-message" id="gateMessage" role="alert"></p>
+                </form>
             </div>
 
-            <div class="tab-content" id="documentsTab">
-                <div id="documentsContainer">
-                    <!-- Documents will be loaded here -->
+            <!-- Document Editor Section -->
+            <div class="editor-section" id="editorSection">
+                <div class="editor-tabs">
+                    <button class="tab-button active" onclick="switchTab('documents')">Documents</button>
+                    <button class="tab-button" onclick="switchTab('settings')">Settings</button>
                 </div>
-            </div>
 
-            <div class="tab-content" id="settingsTab" style="display: none;">
-                <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
-                    <h3>⚙️ Settings</h3>
-                    <p>Advanced settings and configurations coming soon!</p>
-                    <br>
-                    <div style="background: var(--surface); border: 1px solid var(--border); padding: 20px; border-radius: 12px; text-align: left;">
-                        <h4 style="margin-bottom: 10px; color: var(--text);">Current Configuration:</h4>
+                <div class="tab-content" id="documentsTab">
+                    <div id="documentsContainer">
+                        <!-- Documents will be loaded here -->
+                    </div>
+                </div>
+
+                <div class="tab-content" id="settingsTab" style="display: none;">
+                    <div class="card settings-card">
+                        <h2>Settings</h2>
+                        <p class="settings-intro">Advanced settings and configurations coming soon!</p>
+                        <h3>Current Configuration:</h3>
                         <p><strong>API Endpoint:</strong> http://localhost:8000</p>
                         <p><strong>Embedding Model:</strong> text-embedding-3-small</p>
                         <p><strong>Chat Model:</strong> gpt-4o</p>
                         <p><strong>Top-K Results:</strong> 6</p>
                     </div>
                 </div>
-            </div>
 
-            <div class="save-section">
-                <button class="save-button" id="saveBtn" onclick="saveDocuments()">
-                    <span id="saveText">💾 Save</span>
-                </button>
+                <div class="save-bar">
+                    <p>Save updates the knowledge base with these documents.</p>
+                    <button type="button" class="button-primary save-button" id="saveBtn" onclick="saveDocuments()">
+                        <span id="saveText">Save</span>
+                    </button>
+                </div>
             </div>
         </div>
-    </div>
+    </main>
 
     <!-- Notification -->
-    <div class="notification" id="notification" role="status"></div>
+    <div class="notification" id="notification" role="status">
+        <svg class="icon icon-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>
+        <svg class="icon icon-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <svg class="icon icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <span id="notificationText"></span>
+    </div>
 
     <script>
         const documentsContainer = document.getElementById('documentsContainer');
         const saveBtn = document.getElementById('saveBtn');
         const notification = document.getElementById('notification');
+        const notificationText = document.getElementById('notificationText');
         const gateView = document.getElementById('gate');
         const gateForm = document.getElementById('gateForm');
         const tokenInput = document.getElementById('tokenInput');
@@ -535,9 +463,9 @@
                     location.replace('/admin/login');
                     return;
                 }
-                showNotification("❌ Can't sign out right now. Please try again.", 'error');
+                showNotification("Can't sign out right now. Please try again.", 'error');
             } catch (error) {
-                showNotification("❌ Can't reach the server. Please try again.", 'error');
+                showNotification("Can't reach the server. Please try again.", 'error');
             }
             signOutBtn.disabled = false;
         });
@@ -549,7 +477,7 @@
                 if (response.ok) {
                     const data = await response.json();
                     documents = data.documents || [];
-                    console.log(`✅ Loaded ${documents.length} documents from API`);
+                    console.log(`Loaded ${documents.length} documents from API`);
                 } else {
                     console.warn('Failed to fetch documents from API, using fallback');
                     // Fallback to empty array - user can add documents manually
@@ -569,7 +497,7 @@
 
             documents.forEach((doc, index) => {
                 const docElement = document.createElement('div');
-                docElement.className = 'document-item';
+                docElement.className = 'card document-item';
                 docElement.innerHTML = `
                     <div class="document-header">
                         <div>
@@ -580,6 +508,7 @@
                     <div class="document-text">
                         <textarea
                             id="doc-${index}"
+                            class="field"
                             placeholder="Enter document content..."
                             oninput="updateDocument(${index}, this.value)"
                         >${doc.text}</textarea>
@@ -619,12 +548,12 @@
 
         async function saveDocuments() {
             const saveText = document.getElementById('saveText');
-            const originalText = saveText.innerHTML;
+            const originalText = 'Save';
 
             saveBtn.disabled = true;
             saveBtn.classList.add('loading');
             saveBtn.classList.remove('success', 'error');
-            saveText.innerHTML = '🔄 Saving...';
+            saveText.textContent = 'Saving…';
 
             try {
                 const response = await postSeed();
@@ -632,33 +561,33 @@
                 if (response.status === 401) {
                     // The session has ended (it expired, or the admin token changed):
                     // sign in again in place. The in-memory documents keep the unsaved edits.
-                    saveText.innerHTML = originalText;
+                    saveText.textContent = originalText;
                     showSignIn();
                     return;
                 }
 
                 if (response.ok) {
                     const data = await response.json();
-                    showNotification(`✅ Saved ${data.inserted} chunks, removed ${data.removed} old ones`, 'success');
+                    showNotification(`Saved ${data.inserted} chunks, removed ${data.removed} old ones`, 'success');
                     saveBtn.classList.remove('loading');
                     saveBtn.classList.add('success');
-                    saveText.innerHTML = '✅ Saved!';
+                    saveText.textContent = 'Saved';
 
                     setTimeout(() => {
-                        saveText.innerHTML = originalText;
+                        saveText.textContent = originalText;
                         saveBtn.classList.remove('success');
                     }, 2000);
                 } else {
                     throw new Error('Failed to save documents');
                 }
             } catch (error) {
-                showNotification('❌ Failed to update database. Please try again.', 'error');
+                showNotification('Failed to update database. Please try again.', 'error');
                 saveBtn.classList.remove('loading');
                 saveBtn.classList.add('error');
-                saveText.innerHTML = '❌ Failed';
+                saveText.textContent = 'Save failed';
 
                 setTimeout(() => {
-                    saveText.innerHTML = originalText;
+                    saveText.textContent = originalText;
                     saveBtn.classList.remove('error');
                 }, 2000);
             } finally {
@@ -668,7 +597,7 @@
         }
 
         function showNotification(message, type = 'info') {
-            notification.textContent = message;
+            notificationText.textContent = message;
             notification.className = `notification ${type}`;
             notification.classList.add('show');
 
