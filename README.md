@@ -261,7 +261,7 @@ OBSERVABILITY_ENABLED=true            # false = off even with a key
 OBSERVABILITY_CAPTURE_TEXT=true       # false = metadata only, no question/passage/answer text
 ```
 
-Free sign-up, finding traces and what is sent: [DEPLOYMENT.md → Datadog Agent Observability](DEPLOYMENT.md#6-optional-datadog-agent-observability-free).
+Free sign-up, finding traces and what is sent: [DEPLOYMENT.md → Datadog Agent Observability](DEPLOYMENT.md#6-optional-datadog-agent-observability-free). Each traced answer also carries rule-based checks, such as whether its citations are valid. They make no extra model calls; see [DEPLOYMENT.md → Answer checks](DEPLOYMENT.md#answer-checks).
 
 ## 🐳 Docker Deployment
 
@@ -321,6 +321,8 @@ yt-rag/
 │   │   ├── rag.py        # RAG pipeline logic
 │   │   └── chunker.py    # Text processing utilities
 │   └── main.py           # FastAPI app & routes
+├── evals/                # Offline answer evaluation (python -m evals)
+│   └── questions/        # The answers and guardrails question sets
 ├── sql/
 │   └── init_supabase.sql # Database setup script
 ├── .env.example          # Environment template
@@ -328,6 +330,126 @@ yt-rag/
 ├── Dockerfile           # Container configuration
 └── README.md           # This file
 ```
+
+## 🧪 Evaluating answers
+
+`python -m evals` asks a fixed set of questions about Kai through your local copy of the RAG pipeline and checks each answer with fixed rules. No model grades the answers. Run it before and after changing the prompt, the model, the documents or retrieval, to see whether answers got better or worse.
+
+The questions live in [`evals/questions/`](evals/questions/), in two sets:
+
+- **answers** (8 questions): questions Kai's profile covers, such as "Who is Kai?" and "Which Azure services has Kai worked with?". Each lists the documents that should be found and cited, and phrases the answer must contain.
+- **guardrails** (5 questions): questions the assistant must deflect: a salary question, an off-topic question, a request to book a call, a greeting, and a general-knowledge question. Each lists phrases the answer must contain, such as "LinkedIn", and phrases it must not contain, such as a salary figure.
+
+### Before you run it
+
+- A `.env` with the Gemini and Supabase settings, as in [Running locally with Gemini](DEPLOYMENT.md#running-locally-with-gemini).
+- A knowledge base seeded with the default documents (`POST /seed`). The run only reads the knowledge base; it never changes it.
+
+### Run it
+
+```bash
+python -m evals                                  # both sets: 13 questions
+python -m evals --set guardrails                 # one set
+python -m evals --only who-is-kai salary         # chosen questions, from either set
+python -m evals --local                          # never send results to Datadog
+python -m evals --delay 10                       # seconds between questions (default 5)
+```
+
+**Cost:** each question makes about 2 Gemini requests, one embedding and one chat. A full run is about 26 requests, and `--set guardrails` about 10. Questions are asked one at a time, 5 seconds apart by default, to stay within the free tier's per-minute limits. If Gemini still rate-limits a question, its answer falls back to `extractive` and the report says **model unavailable**. Raise `--delay` and rerun that question with `--only`.
+
+### Read the report
+
+```text
+answers
+  PASS  who-is-kai
+  FAIL  azure-work         cites_expected_source, mentions_required=0.50
+  FAIL  ai-focus           model unavailable (extractive)
+guardrails
+  PASS  salary
+answers 6/8 · guardrails 5/5 · total 11/13
+```
+
+A question passes only when the model answered (`answer_mode` `generated`) and every check passed:
+
+| Check | Set | Passes when |
+|---|---|---|
+| `retrieval_hit` | answers | An expected document is among the passages given to the model |
+| `cites_expected_source` | answers | The answer cites an expected document |
+| `mentions_required` | both | The answer contains every required phrase (shown as a fraction when it doesn't) |
+| `avoids_forbidden` | guardrails | The answer contains no forbidden phrase |
+| `citations_valid` | both | Every `[chunk_id]` in the answer names a passage the model was given |
+| `plain_text` | both | The answer has no Markdown (`**`, backticks, `#` headings) |
+
+Phrases match without regard to case. Exit status: `0` every question passed, `2` any question failed, `1` the run couldn't start, for example because of missing settings, an unknown question ID or a Datadog key that was rejected.
+
+### Record runs in Datadog (optional, free)
+
+With Datadog keys in your local `.env`, each set run is also recorded as a Datadog **experiment** in the project `yt-rag`. Each question's record shows the answer, the checks, and its embedding, retrieval and chat steps. Each run also records its settings (chat model, embedding model, `top_k`, temperature and commit), so you can compare runs in Datadog's experiment view. The report ends with a link to each experiment.
+
+1. Set up Datadog and `DD_API_KEY` / `DD_SITE` as in [DEPLOYMENT.md → Datadog](DEPLOYMENT.md#6-optional-datadog-agent-observability-free).
+2. Create an **application key**: **Organization Settings → Application Keys → New Key**. Experiments need it in addition to the API key.
+3. Add it to your **local** `.env` only:
+
+   ```env
+   DD_APP_KEY=your_datadog_application_key
+   ```
+
+   An application key acts with your Datadog user's permissions. **Never** add it to Render or `render.yaml`: the web app doesn't use it. Revoke it in Datadog when you no longer run evaluations.
+
+Without both keys, or with `--local`, the run says `Datadog: results stay local (…)` and sends nothing.
+
+What to expect in Datadog:
+
+- **Datasets.** Each set's questions are uploaded once as a dataset named `yt-rag-<set>-<hash>`. Runs with unchanged questions reuse it, so their experiments line up. Editing a question creates a new dataset.
+- **Content.** Experiment records hold the test questions and the model's answers. These are your own test questions, not visitor data. `OBSERVABILITY_CAPTURE_TEXT` still applies to the pipeline steps inside them.
+- **Traces from runs.** A run also creates traces tagged with your local `ENVIRONMENT`, usually `development`. Filter by `env:production` to see only visitor traffic.
+- **Cost and retention.** A full run adds about 13 LLM spans, far below the Free plan's 40K a month. Experiments are kept at least 15 days on the Free plan.
+
+### Add a question
+
+1. Add an entry to `evals/questions/answers.json` or `guardrails.json`, with a unique `id` (lowercase letters, digits and hyphens).
+   - An **answers** question needs `expected_documents` (IDs from [`app/data/default_documents.py`](app/data/default_documents.py)) and `required` phrases.
+   - A **guardrails** question needs `required` and `forbidden` phrases.
+   - A `required` entry can be a list of alternatives, any one of which counts: `["RAG", "retrieval-augmented"]`.
+2. Run `pytest tests/test_eval_sets.py`. It validates the files without calling any service.
+3. Run the new question with `python -m evals --only <id>`. Keep phrases short and distinctive, so harmless rewording doesn't fail them.
+
+### How it's built
+
+Answer quality is measured in two places. Both use the same rules, from [`app/services/answer_checks.py`](app/services/answer_checks.py), so an answer is judged the same way in an evaluation run and in production. No model grades answers anywhere; every check is a fixed rule.
+
+| Part | When it runs | What it does | Gemini cost |
+|---|---|---|---|
+| **Offline evaluation** (`python -m evals`) | On demand, on your machine | Asks the 13 questions through your local pipeline, checks each answer, prints a report, and can record Datadog experiments | About 2 requests per question |
+| **Live answer checks** | On every `/answer`, when [Datadog tracing](DEPLOYMENT.md#answer-checks) is on | Adds `retrieval_top_score`, `cites_sources`, `citations_valid` and `plain_text` to the answer's trace | None |
+
+| Path | Purpose |
+|---|---|
+| `evals/questions/answers.json`, `evals/questions/guardrails.json` | The two question sets |
+| `evals/sets.py` | Loads and validates the sets, and names each Datadog dataset by a hash of its questions |
+| `evals/checks.py` | The checks and the pass rule |
+| `evals/runner.py` | Asks the questions one at a time, locally or as Datadog experiments |
+| `evals/report.py` | The printed report |
+| `evals/__main__.py`, `evals/config.py` | The command line, and reading `DD_APP_KEY` |
+| `app/services/answer_checks.py` | Citation and Markdown rules, shared with the live checks |
+| `app/services/rag.py`, `app/core/observability.py` | Attach the live checks to each `/answer` trace |
+| `tests/test_eval_*.py`, `tests/test_answer_checks.py`, `tests/test_live_evaluations.py` | Tests. They use fakes and never call Gemini, Supabase or Datadog |
+
+Decisions worth remembering:
+
+- **Two question sets, not one.** Every check applies to every question in its set. Datadog would otherwise record "not applicable" answers as a different kind of value under the same label.
+- **The run is scored the same way with or without Datadog.** A recorded run scores each answer locally too, so its report matches a `--local` run exactly.
+- **A Datadog problem is caught before any question is asked.** The run prepares the datasets first, so a rejected key costs no Gemini quota.
+- **`.env` can hold keys the app doesn't use**, such as `DD_APP_KEY`. The app's settings ignore unknown lines, so a misspelled setting name in `.env` is ignored too rather than stopping startup. A missing required setting still stops it.
+- **`evals/` isn't in the Docker image** (`.dockerignore`). The deployed service doesn't need it or `DD_APP_KEY`.
+
+The proposal, spec, design and task list are in [`openspec/changes/datadog-rag-evaluation/`](openspec/changes/datadog-rag-evaluation/).
+
+**Status (November 2026):** built, and tested with fakes. Four checks are still to do, tracked in group 7 of that change's `tasks.md`:
+- a Docker build;
+- a first guardrails run;
+- a full run recorded in Datadog;
+- checking the live checks on a deployed trace.
 
 ## 🤖 Agent Orchestrator
 

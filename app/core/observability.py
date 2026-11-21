@@ -16,16 +16,18 @@ Rules enforced here, so no service can get them wrong:
   can echo request or account details and never reach a span.
 - With OBSERVABILITY_CAPTURE_TEXT=false, every text value in a span's input or
   output is replaced by its length.
+- Evaluations (`span.evaluate`) hold only numbers and booleans, never text.
 - A tracing failure is logged and swallowed; it never fails a request.
 
-Design: openspec/changes/add-datadog-agent-observability/design.md
+Design: openspec/changes/add-datadog-agent-observability/design.md, and for
+evaluations openspec/changes/datadog-rag-evaluation/design.md
 """
 
 import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, Optional, Protocol
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,8 @@ class Recorder(Protocol):
 
     def finish(self, raw: Any) -> None: ...
 
+    def evaluate(self, raw: Any, label: str, metric_type: str, value: Any, assessment: Optional[str]) -> None: ...
+
     def trace_id(self, raw: Any) -> Optional[str]: ...
 
     def flush(self) -> None: ...
@@ -70,6 +74,9 @@ class NoopRecorder:
         pass
 
     def finish(self, raw):
+        pass
+
+    def evaluate(self, raw, label, metric_type, value, assessment):
         pass
 
     def trace_id(self, raw):
@@ -112,6 +119,16 @@ class DatadogRecorder:
     def finish(self, raw):
         raw.finish()
 
+    def evaluate(self, raw, label, metric_type, value, assessment):
+        # No ml_app: the SDK has deprecated it and uses the app given to enable().
+        self._llmobs.submit_evaluation(
+            span=self._llmobs.export_span(raw),
+            label=label,
+            metric_type=metric_type,
+            value=value,
+            assessment=assessment,
+        )
+
     def trace_id(self, raw):
         exported = self._llmobs.export_span(raw)
         return exported["trace_id"] if exported else None
@@ -125,6 +142,7 @@ _recorder: Recorder = _NOOP
 _capture_text = True
 _current: ContextVar[Optional["Span"]] = ContextVar("observability_current_span", default=None)
 _warned = False
+_sdk: Any = None  # the enabled LLMObs class, set by setup()
 
 
 def _safely(action: str, call, *args, **kwargs):
@@ -152,11 +170,23 @@ def _omit_text(value: Any, key: Optional[str] = None) -> Any:
     return value
 
 
+def _metric_type(value: Any) -> str:
+    """Datadog metric type for an evaluation value. Only numbers and booleans are allowed,
+    so an evaluation can never carry visitor or document text."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "score"
+    raise TypeError(f"evaluation values must be numbers or booleans, not {type(value).__name__}")
+
+
 class Span:
-    """An open span. Services describe their step with `record` and `fail`.
+    """An open span. Services describe their step with `record`, `fail` and `evaluate`.
 
     Fields are collected while the span is open and sent once, when it closes.
     """
+
+    recording = True  # a real span: evaluations and fields reach the recorder
 
     def __init__(self, recorder: Recorder, raw: Any, parent: Optional["Span"], capture_text: bool):
         self._recorder = recorder
@@ -168,6 +198,7 @@ class Span:
         self._metadata: Dict[str, Any] = {}
         self._metrics: Dict[str, Any] = {}
         self._tags: Dict[str, Any] = {}
+        self._evaluations: List[Tuple[str, str, Any, Optional[str]]] = []
         self.failed = False
 
     def record(self, *, input: Any = None, output: Any = None, metadata: Optional[Dict[str, Any]] = None,
@@ -192,6 +223,17 @@ class Span:
         self.failed = True
         _safely("fail", self._recorder.fail, self.raw, error_type, http_status)
 
+    def evaluate(self, label: str, value: Any, *, assessment: Optional[str] = None) -> None:
+        """Attach an evaluation of this step, sent when the span closes.
+
+        `value` must be a bool (a boolean metric) or a number (a score); any
+        other value is dropped and logged. `assessment` is "pass", "fail" or None.
+        """
+        metric_type = _safely("evaluate", _metric_type, value)
+        if metric_type is None:
+            return
+        self._evaluations.append((label, metric_type, value, assessment))
+
     def _close(self) -> None:
         _safely(
             "annotate",
@@ -201,6 +243,9 @@ class Span:
             ),
         )
         _safely("finish", self._recorder.finish, self.raw)
+        # After finish, so each evaluation refers to a span that has been sent.
+        for label, metric_type, value, assessment in self._evaluations:
+            _safely("evaluate", self._recorder.evaluate, self.raw, label, metric_type, value, assessment)
 
 
 class _NoopSpan:
@@ -208,11 +253,15 @@ class _NoopSpan:
 
     raw = None
     failed = False
+    recording = False  # nothing is recorded, so callers can skip work meant only for traces
 
     def record(self, **fields) -> None:
         pass
 
     def fail(self, error_type: str, http_status: Optional[int] = None) -> None:
+        pass
+
+    def evaluate(self, label: str, value: Any, *, assessment: Optional[str] = None) -> None:
         pass
 
 
@@ -313,8 +362,23 @@ def use_recorder(recorder: Recorder, *, capture_text: bool = True) -> None:
     _warned = False
 
 
+def sdk():
+    """The enabled Datadog SDK (`LLMObs`), or None when tracing is off.
+
+    For `python -m evals`, which records Datadog experiments; services use the
+    span functions above instead.
+    """
+    return _sdk
+
+
+def _set_sdk(llmobs: Any) -> None:
+    global _sdk
+    _sdk = llmobs
+
+
 def reset() -> None:
     """Back to the default: tracing off."""
+    _set_sdk(None)
     use_recorder(_NOOP)
 
 
@@ -344,12 +408,15 @@ def _load_llmobs():
     return LLMObs
 
 
-def setup(settings) -> bool:
+def setup(settings, *, app_key: Optional[str] = None, project_name: Optional[str] = None) -> bool:
     """Turn tracing on when a Datadog API key is configured. Returns whether it's on.
 
     Without a key, or with OBSERVABILITY_ENABLED=false, nothing changes and
     `ddtrace` isn't imported. If the SDK fails to start, the app keeps running
     with tracing off and one warning is logged.
+
+    `app_key` and `project_name` are for `python -m evals` only, which records
+    Datadog experiments. The web app never passes them.
     """
     api_key = (settings.dd_api_key or "").strip()
     if not settings.observability_enabled or not api_key:
@@ -361,6 +428,11 @@ def setup(settings) -> bool:
         for key, value in _sdk_environment().items():
             os.environ.setdefault(key, value)
         llmobs = _load_llmobs()
+        experiments = {}
+        if app_key:
+            experiments["app_key"] = app_key
+        if project_name:
+            experiments["project_name"] = project_name
         llmobs.enable(
             ml_app=ml_app,
             api_key=api_key,
@@ -369,12 +441,14 @@ def setup(settings) -> bool:
             integrations_enabled=False,  # our spans only: no duplicate LLM spans
             env=settings.environment,
             service=ml_app,
+            **experiments,
         )
     except Exception as e:
         logger.warning("Datadog tracing could not start (%s); continuing with tracing off", type(e).__name__)
         return False
 
     use_recorder(DatadogRecorder(llmobs), capture_text=settings.observability_capture_text)
+    _set_sdk(llmobs)
     logger.info(
         "Datadog Agent Observability tracing is on: site=%s, app=%s, text capture %s",
         site, ml_app, "on" if settings.observability_capture_text else "off",

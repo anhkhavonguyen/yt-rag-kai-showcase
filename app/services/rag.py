@@ -10,9 +10,10 @@ import logging
 import time
 import re
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from ..core import observability
 from ..core.database import db
+from . import answer_checks
 from .embedding import embedding_service
 from .chat import ChatUnavailableError, chat_service
 from .chunker import chunker
@@ -132,11 +133,14 @@ class RAGService:
             "no_results" or "error" (failed before the model was called).
 
         Traced as one workflow span with embedding, retrieval and chat model
-        spans under it (see app/core/observability.py).
+        spans under it (see app/core/observability.py). When tracing is on, the
+        workflow span also carries live answer checks (`_check_answer`).
         """
         with observability.workflow("answer_question") as span:
             span.record(input=query, metadata={"top_k": top_k})
-            response = await self._answer(query, top_k)
+            response, top_score = await self._answer(query, top_k)
+            if span.recording:
+                self._check_answer(span, response, top_score)
 
             debug = response['debug']
             span.record(
@@ -158,9 +162,40 @@ class RAGService:
             )
             return response
 
-    async def _answer(self, query: str, top_k: int) -> Dict[str, Any]:
-        """The pipeline behind `answer_query`, without its tracing and summary log line."""
+    @staticmethod
+    def _check_answer(span, response: Dict[str, Any], top_score: Optional[float]) -> None:
+        """Attach rule-based answer checks to the request's span. No model or database calls.
+
+        generated: retrieval_top_score, cites_sources, citations_valid, plain_text.
+        extractive: retrieval_top_score. no_results and error: none.
+        Values are numbers and booleans only, never text. A failure here is
+        logged and never affects the answer.
+        """
+        try:
+            mode = response['debug']['answer_mode']
+            if mode not in ('generated', 'extractive'):
+                return
+            if top_score is not None:
+                span.evaluate('retrieval_top_score', top_score)
+            if mode != 'generated':
+                return
+            text = response['text']
+            span.evaluate('cites_sources', bool(response['citations']))
+            valid = answer_checks.citations_valid(text, response['debug']['top_doc_ids'])
+            span.evaluate('citations_valid', valid, assessment='pass' if valid else 'fail')
+            plain = answer_checks.plain_text(text)
+            span.evaluate('plain_text', plain, assessment='pass' if plain else 'fail')
+        except Exception as e:
+            logger.warning("Answer checks failed (%s); the answer is unaffected", type(e).__name__)
+
+    async def _answer(self, query: str, top_k: int) -> Tuple[Dict[str, Any], Optional[float]]:
+        """The pipeline behind `answer_query`, without its tracing and summary log line.
+
+        Returns the response and the highest similarity score retrieved (None
+        when nothing was retrieved or no score was reported), for answer checks.
+        """
         start_time = time.time()
+        top_score: Optional[float] = None
 
         def result(
             text: str,
@@ -189,9 +224,10 @@ class RAGService:
                 span.record(input=query, metadata={"top_k": top_k})
                 search_results = await self.db.vector_search(query_embedding, top_k)
                 span.record(output=[self._retrieved_document(row) for row in search_results])
+            top_score = self._top_score(search_results)
 
             if not search_results:
-                return result(NO_RESULTS_TEXT, [], [], 'no_results')
+                return result(NO_RESULTS_TEXT, [], [], 'no_results'), top_score
 
             # Step 3: Deduplicate and prepare context
             context_blocks = self._prepare_context(search_results)
@@ -200,20 +236,27 @@ class RAGService:
         except Exception as e:
             # No provider text in the response; the type goes to the server log.
             logger.error(f"Query processing failed before answering: {type(e).__name__}")
-            return result(RETRIEVAL_ERROR_TEXT, [], [], 'error')
+            return result(RETRIEVAL_ERROR_TEXT, [], [], 'error'), top_score
 
         # Step 4: Generate answer, or fall back to the retrieved passages
         try:
             answer_text = await self.chat_service.generate_answer(query, context_blocks)
         except ChatUnavailableError:
             logger.warning("Chat model unavailable; returning retrieved passages instead")
-            return result(
+            response = result(
                 self._extractive_answer(context_blocks), context_ids, context_ids, 'extractive', context_blocks
             )
+            return response, top_score
 
         # Step 5: Extract citations from answer
         citations = self._extract_citations(answer_text, context_blocks)
-        return result(answer_text, citations, context_ids, 'generated', context_blocks)
+        return result(answer_text, citations, context_ids, 'generated', context_blocks), top_score
+
+    @staticmethod
+    def _top_score(rows: List[Dict[str, Any]]) -> Optional[float]:
+        """The highest numeric similarity among search results, or None."""
+        scores = [row['similarity'] for row in rows if isinstance(row.get('similarity'), (int, float))]
+        return max(scores) if scores else None
 
     @staticmethod
     def _title(chunk_id: str) -> str:

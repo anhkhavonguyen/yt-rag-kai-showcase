@@ -1,5 +1,8 @@
 """The test suite must never pick up real credentials or settings (e.g. from a local .env)."""
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings, get_settings
 from conftest import PLACEHOLDER_SETTINGS
 
@@ -53,6 +56,25 @@ def test_placeholders_override_conflicting_env_file(tmp_path):
     )
 
     assert_placeholder_settings(Settings(_env_file=env_file))
+
+
+def test_unknown_env_file_lines_are_ignored(tmp_path):
+    """A .env can hold values for other tools (e.g. DD_APP_KEY for evals); the app ignores them."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("DD_APP_KEY=real-app-key\nSOME_UNKNOWN=1\n", encoding="utf-8")
+
+    settings = Settings(_env_file=env_file)
+
+    assert_placeholder_settings(settings)
+    assert "real-app-key" not in repr(settings.model_dump())
+    assert not hasattr(settings, "dd_app_key")
+
+
+def test_missing_required_setting_still_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL")
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=tmp_path / "missing.env")
+    assert [e["loc"] for e in error.value.errors()] == [("supabase_url",)]
 
 
 def test_datadog_key_in_env_file_does_not_turn_tracing_on(tmp_path):
