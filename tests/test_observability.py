@@ -186,6 +186,72 @@ def test_an_explicit_failure_is_kept_when_another_error_follows(recorder):
     assert recorder.spans[0]["error"] == {"type": "RateLimitError", "http_status": 429}
 
 
+# --- Evaluations -----------------------------------------------------------
+
+
+def test_evaluation_types_come_from_the_value(recorder):
+    with observability.workflow("answer_question") as span:
+        span.evaluate("citations_valid", True, assessment="pass")
+        span.evaluate("retrieval_top_score", 0.82)
+        span.evaluate("passages", 4)
+
+    assert recorder.spans[0]["evaluations"] == [
+        {"label": "citations_valid", "metric_type": "boolean", "value": True, "assessment": "pass",
+         "after_finish": True},
+        {"label": "retrieval_top_score", "metric_type": "score", "value": 0.82, "assessment": None,
+         "after_finish": True},
+        {"label": "passages", "metric_type": "score", "value": 4, "assessment": None, "after_finish": True},
+    ]
+
+
+def test_evaluations_are_sent_after_the_span_finishes(recorder):
+    with observability.workflow("answer_question") as span:
+        span.evaluate("plain_text", True)
+        assert recorder.spans[0]["evaluations"] == []  # nothing sent while open
+
+    assert recorder.spans[0]["evaluations"][0]["after_finish"] is True
+
+
+@pytest.mark.parametrize("value", ["Kai leads teams.", None, ["skills#1"], {"a": 1}])
+def test_evaluation_values_other_than_numbers_and_booleans_are_dropped(recorder, caplog, value):
+    with caplog.at_level(logging.DEBUG, logger="app.core.observability"):
+        with observability.workflow("answer_question") as span:
+            span.evaluate("answer", value)
+            span.evaluate("other", value)
+
+    assert recorder.spans[0]["evaluations"] == []
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    assert "Kai leads teams." not in caplog.text
+
+
+def test_noop_span_evaluate_does_nothing():
+    with observability.workflow("answer_question") as span:
+        assert span.recording is False
+        span.evaluate("citations_valid", True, assessment="pass")
+
+
+def test_real_span_is_recording(recorder):
+    with observability.workflow("answer_question") as span:
+        assert span.recording is True
+
+
+class EvaluateFailsRecorder(FakeRecorder):
+    def evaluate(self, raw, label, metric_type, value, assessment):
+        raise RuntimeError("intake rejected")
+
+
+def test_a_failing_evaluation_is_swallowed_and_the_span_still_finishes():
+    fake = EvaluateFailsRecorder()
+    observability.use_recorder(fake)
+
+    with observability.workflow("answer_question") as span:
+        span.evaluate("plain_text", True)
+        result = "answered"
+
+    assert result == "answered"
+    assert fake.spans[0]["finished"] is True
+
+
 # --- Provider labels -------------------------------------------------------
 
 
@@ -228,6 +294,7 @@ class FakeLLMObs:
         self.enable_error = enable_error
         self.enable_calls: list[dict] = []
         self.annotations: list[dict] = []
+        self.evaluations: list[dict] = []
         self.flushes = 0
 
     def enable(self, **kwargs):
@@ -245,6 +312,9 @@ class FakeLLMObs:
 
     def export_span(self, span):
         return {"span_id": "1", "trace_id": "abc123"}
+
+    def submit_evaluation(self, **kwargs):
+        self.evaluations.append(kwargs)
 
     def flush(self):
         self.flushes += 1
@@ -273,6 +343,24 @@ def test_datadog_recorder_maps_spans_onto_the_sdk():
     assert sdk.annotations[0] == {"metrics": {"input_tokens": 812}}  # empty fields left out
     assert sdk.annotations[1] == {"input_data": QUESTION}
     assert sdk.flushes == 1
+
+
+def test_datadog_recorder_submits_evaluations_for_the_exported_span():
+    sdk = FakeLLMObs()
+    observability.use_recorder(RealDatadogRecorder(sdk))
+
+    with observability.workflow("answer_question") as span:
+        span.evaluate("citations_valid", False, assessment="fail")
+        span.evaluate("retrieval_top_score", 0.82)
+
+    assert span.raw.finished
+    assert sdk.evaluations == [
+        {"span": {"span_id": "1", "trace_id": "abc123"}, "label": "citations_valid", "metric_type": "boolean",
+         "value": False, "assessment": "fail"},
+        {"span": {"span_id": "1", "trace_id": "abc123"}, "label": "retrieval_top_score", "metric_type": "score",
+         "value": 0.82, "assessment": None},
+    ]
+    assert all("ml_app" not in call for call in sdk.evaluations)
 
 
 # --- setup -----------------------------------------------------------------
@@ -344,6 +432,18 @@ def test_setup_enables_agentless_tracing_with_integrations_off(fake_sdk, monkeyp
     assert "dd-test-key-123" not in caplog.text
     with observability.workflow("answer_question"):
         assert observability.current_trace_id() == "abc123"
+
+
+def test_setup_passes_app_key_and_project_only_when_given(fake_sdk, caplog):
+    with caplog.at_level(logging.DEBUG, logger="app.core.observability"):
+        observability.setup(settings_with())
+        observability.setup(settings_with(), app_key="dd-app-key-456", project_name="yt-rag")
+
+    without, with_keys = fake_sdk.enable_calls
+    assert "app_key" not in without and "project_name" not in without
+    assert with_keys["app_key"] == "dd-app-key-456"
+    assert with_keys["project_name"] == "yt-rag"
+    assert "dd-app-key-456" not in caplog.text
 
 
 def test_setup_keeps_sdk_settings_the_owner_already_set(fake_sdk, monkeypatch):

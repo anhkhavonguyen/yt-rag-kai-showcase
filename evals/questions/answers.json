@@ -1,0 +1,53 @@
+{
+  "set": "answers",
+  "questions": [
+    {
+      "id": "who-is-kai",
+      "question": "Who is Kai?",
+      "expected_documents": ["kai_overview_v1", "kai_current_role_v1"],
+      "required": ["Team Lead", "Orient Software"]
+    },
+    {
+      "id": "who-is-kha-vo",
+      "question": "Who is Kha Vo?",
+      "expected_documents": ["kai_overview_v1", "kai_current_role_v1"],
+      "required": ["Team Lead", "Orient Software"]
+    },
+    {
+      "id": "what-can-kai-do",
+      "question": "What can Kai do?",
+      "expected_documents": ["kai_expertise_v1"],
+      "required": [".NET", "Azure"]
+    },
+    {
+      "id": "current-role",
+      "question": "What does Kai do at DEKRA?",
+      "expected_documents": ["kai_current_role_v1", "kai_cloud_production_v1", "kai_overview_v1"],
+      "required": ["DEKRA", "booking"]
+    },
+    {
+      "id": "azure-work",
+      "question": "Which Azure services has Kai worked with?",
+      "expected_documents": ["kai_cloud_production_v1", "kai_expertise_v1"],
+      "required": ["API Management", "Redis"]
+    },
+    {
+      "id": "earlier-employer",
+      "question": "Where did Kai work before Orient Software?",
+      "expected_documents": ["kai_dxc_v1", "kai_overview_v1"],
+      "required": ["DXC"]
+    },
+    {
+      "id": "ai-focus",
+      "question": "What is Kai's experience with AI?",
+      "expected_documents": ["kai_ai_focus_v1", "kai_expertise_v1"],
+      "required": [["RAG", "retrieval-augmented"], ["agent"]]
+    },
+    {
+      "id": "certifications",
+      "question": "What certifications does Kai have?",
+      "expected_documents": ["kai_education_certifications_v1", "kai_ai_focus_v1"],
+      "required": ["Claude Code in Action"]
+    }
+  ]
+}

@@ -334,3 +334,25 @@ def test_app_starts_with_tracing_off_when_tracing_fails_to_start(lifespan_db, mo
     warnings = [r for r in caplog.records if r.name == "app.core.observability" and r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "could not start" in warnings[0].getMessage()
+
+
+def test_web_app_never_passes_an_app_key(lifespan_db, monkeypatch):
+    """DD_APP_KEY is for `python -m evals` only; the web app starts tracing without it."""
+    import app.main
+    from fastapi.testclient import TestClient
+    from test_observability import SDK_ENV, FakeLLMObs
+
+    for name in SDK_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DD_APP_KEY", "dd-app-key-456")
+    monkeypatch.setattr(app.main.settings, "dd_api_key", "dd-test-key-123")
+    monkeypatch.setattr(app.main.settings, "observability_enabled", True)
+    sdk = FakeLLMObs()
+    monkeypatch.setattr(observability, "_load_llmobs", lambda: sdk)
+    monkeypatch.setattr(observability, "DatadogRecorder", lambda llmobs: FakeRecorder())
+
+    with TestClient(app.main.app) as client:
+        assert client.get("/healthz").status_code == 200
+
+    [call] = sdk.enable_calls
+    assert "app_key" not in call and "project_name" not in call

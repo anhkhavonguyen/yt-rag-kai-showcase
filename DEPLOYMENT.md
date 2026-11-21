@@ -126,6 +126,23 @@ The app sends traces straight to Datadog, so no Datadog Agent runs beside it. Th
 - **From a log line:** each question writes one line to the Render log, such as `Answer finished: mode=extractive latency=31250ms citations=4 trace_id=…`. Search for that `trace_id` in the Traces view to open that question's trace.
 - A failed step is marked as an error with the error type and HTTP status, for example `RateLimitError (HTTP 429)`. The provider's error message is never sent.
 
+### Answer checks
+
+Each question's trace also carries a few checks of the answer the visitor got. The app computes them from the answer itself, with no extra model calls. They aren't LLM spans, so they don't count toward the free plan's limit. They hold only numbers and true/false values, never question or answer text.
+
+| Check | What it tells you | Recorded for |
+|---|---|---|
+| `retrieval_top_score` | The highest similarity score among the passages found (0 to 1). A low score means the knowledge base had nothing close to the question. | `generated` and `extractive` answers |
+| `cites_sources` | Whether the answer cites at least one passage. `false` is expected for greetings, off-topic questions and "Kai's profile doesn't cover that". | `generated` answers |
+| `citations_valid` | Whether every `[chunk_id]` in the answer names a passage the model was given. **fail** means the model made up a citation. | `generated` answers |
+| `plain_text` | Whether the answer is free of Markdown (`**`, backticks, `#` headings), as the assistant's instructions require. **fail** means it isn't. | `generated` answers |
+
+Answers with `answer_mode` `no_results` or `error` carry no checks.
+
+**Where to find them:** open a trace and select its root span, `answer_question`, then its **Evaluations**. To look across many answers, filter traces by an evaluation in Agent Observability, for example every `citations_valid` that failed. Datadog is renaming the product, so menu names may differ.
+
+The checks are part of tracing, so turning tracing off (next section) turns them off too. To measure answers *before* a change ships, run the offline evaluation in the [README](README.md#-evaluating-answers).
+
 ### What is sent, and how to turn it off
 
 - **Sent by default:** the visitor's question, the retrieved passages, the prompt sent to the model (including the system prompt), and the answer. Datadog keeps them for 15 days. These questions already go to Gemini's free tier.

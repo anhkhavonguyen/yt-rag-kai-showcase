@@ -27,6 +27,8 @@ PLACEHOLDER_SETTINGS = {
     # Datadog tracing stays off: no key, and switched off as a second guard.
     "DD_API_KEY": "",
     "OBSERVABILITY_ENABLED": "false",
+    # Datadog application key for `python -m evals` experiments: never used by tests.
+    "DD_APP_KEY": "",
 }
 
 # Direct assignment (not setdefault): overwrite anything already in the shell.
@@ -94,7 +96,8 @@ class FakeRecorder:
 
     Each span has kind, name, model, provider, parent (the parent span dict or
     None), trace_id, input, output, metadata, metrics, tags, error
-    ({"type", "http_status"} or None) and finished.
+    ({"type", "http_status"} or None), finished, and evaluations (a list of
+    {"label", "metric_type", "value", "assessment", "after_finish"}).
     """
 
     def __init__(self):
@@ -106,7 +109,7 @@ class FakeRecorder:
             "kind": kind, "name": name, "model": model, "provider": provider, "parent": parent,
             "trace_id": parent["trace_id"] if parent else f"trace-{len(self.spans) + 1}",
             "input": None, "output": None, "metadata": {}, "metrics": {}, "tags": {},
-            "error": None, "finished": False,
+            "error": None, "finished": False, "evaluations": [],
         }
         self.spans.append(span)
         return span
@@ -119,6 +122,16 @@ class FakeRecorder:
 
     def finish(self, raw):
         raw["finished"] = True
+
+    def evaluate(self, raw, label, metric_type, value, assessment):
+        raw["evaluations"].append({
+            "label": label, "metric_type": metric_type, "value": value,
+            "assessment": assessment, "after_finish": raw["finished"],
+        })
+
+    def evaluations(self, span: dict) -> dict:
+        """A span's evaluations by label: {label: (value, assessment)}."""
+        return {e["label"]: (e["value"], e["assessment"]) for e in span["evaluations"]}
 
     def trace_id(self, raw):
         return raw["trace_id"]
@@ -178,6 +191,16 @@ class FakeDatabase:
         self.search_calls: list[tuple[list[float], int]] = []
         self.upsert_error: Exception | None = None  # set to make upsert_chunks raise
         self.delete_error: Exception | None = None  # set to make delete_chunks_except raise
+        self.connect_error: Exception | None = None  # set to make connect raise
+        self.connected = False
+
+    async def connect(self):
+        if self.connect_error:
+            raise self.connect_error
+        self.connected = True
+
+    async def disconnect(self):
+        self.connected = False
 
     def store(self, *chunk_ids: str) -> None:
         """Put chunks in the table, as if seeded earlier."""

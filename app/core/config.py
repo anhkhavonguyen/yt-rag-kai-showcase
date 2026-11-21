@@ -80,6 +80,9 @@ class Settings(BaseSettings):
         """Pydantic configuration."""
         env_file = ".env"
         case_sensitive = False
+        # Lines in .env that aren't settings here are ignored, so .env can also
+        # hold values for other tools, such as DD_APP_KEY for `python -m evals`.
+        extra = "ignore"
 
 
 # Global settings instance
